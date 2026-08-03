@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "User account profiles (Customers, Contractors, Admins)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "phone": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "contractorProfile": {
+          "type": "object",
+          "properties": {
+            "companyName": { "type": "string" },
+            "tradeType": { "type": "string" },
+            "hourlyRateGBP": { "type": "number" },
+            "fixedQuoteEstimateGBP": { "type": "number" },
+            "certifications": { "type": "array", "items": { "type": "string" } },
+            "bio": { "type": "string" },
+            "avatarUrl": { "type": "string" },
+            "availability": { "type": "string" }
+          }
+        }
+      },
+      "required": ["email", "name", "role"]
+    },
+    "vettedContractors": {
+      "title": "Vetted Contractor",
+      "description": "Admin and registered contractor directory entries",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "companyName": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "tradeType": { "type": "string" },
+        "certifications": { "type": "array", "items": { "type": "string" } },
+        "rating": { "type": "number" },
+        "reviewCount": { "type": "number" },
+        "completedJobsCount": { "type": "number" },
+        "hourlyRateGBP": { "type": "number" },
+        "fixedQuoteEstimateGBP": { "type": "number" },
+        "availability": { "type": "string" },
+        "distanceMiles": { "type": "number" },
+        "bio": { "type": "string" }
+      },
+      "required": ["name", "companyName", "tradeType", "hourlyRateGBP"]
+    },
+    "projects": {
+      "title": "Repair Job / Project",
+      "description": "Urgent repair jobs, milestones, escrow holds, and extra variation pay requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "clientName": { "type": "string" },
+        "clientEmail": { "type": "string" },
+        "clientId": { "type": "string" },
+        "assignedContractorId": { "type": "string" },
+        "assignedContractorName": { "type": "string" },
+        "contractorStatus": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "currency": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string text" },
+        "damageDescription": { "type": "string" },
+        "damageImages": { "type": "array", "items": { "type": "string" } },
+        "milestones": { "type": "array" },
+        "extraPayRequests": { "type": "array" }
+      },
+      "required": ["title", "clientName", "totalAmount"]
+    }
+  }
+}

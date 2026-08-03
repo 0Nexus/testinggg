@@ -1,0 +1,6 @@
+{
+  "name": "Renovation Payment Hub",
+  "description": "Tidy Corp AI Secure: Comprehensive UK home renovation escrow management, Dream Wall design visualizer, Awaab's Law hazard compliance, and MCP multi-gateway payment routing (Stripe & Airwallex)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
