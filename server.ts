@@ -253,9 +253,19 @@ function requireRole(allowedRoles: string[]) {
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 8080;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Renovation Payment Hub Server running on http://0.0.0.0:${PORT}`);
+  });
 
   // Initialize and seed Firestore database
-  await seedFirestoreIfEmpty();
+  seedFirestoreIfEmpty().catch(err => {
+    console.error('Firestore seeding failed (server still running):', err);
+  });
+}  
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);   // fail loud instead of hanging silently
+});
 
   // Security Middlewares: CORS, Helmet, Rate Limiting
   app.use(cors({ origin: true, credentials: true }));
