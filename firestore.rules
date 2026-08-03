@@ -1,8 +1,99 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        getUserData().role == 'inspector' || 
+        getUserData().role == 'admin'
+      );
+    }
+
+    function isContractor() {
+      return isSignedIn() && getUserData().role == 'contractor';
+    }
+
+    function isHomeowner() {
+      return isSignedIn() && getUserData().role == 'homeowner';
+    }
+
+    // Default deny all unmatched paths
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      // Users can read and write their own profile; Admins/Inspectors can read all profiles
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if isOwner(userId) || isAdmin();
+    }
+
+    // Projects Collection
+    match /projects/{projectId} {
+      // Accessible to client (homeowner), assigned contractor, or admins
+      allow read: if isSignedIn() && (
+        resource.data.clientId == request.auth.uid ||
+        resource.data.clientEmail == request.auth.token.email ||
+        resource.data.assignedContractorId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (
+        resource.data.clientId == request.auth.uid ||
+        resource.data.clientEmail == request.auth.token.email ||
+        resource.data.assignedContractorId == request.auth.uid ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Vetted Contractors Directory
+    match /vettedContractors/{contractorId} {
+      // Public directory viewable by any signed in user
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin() || (isContractor() && resource.data.email == request.auth.token.email);
+    }
+
+    // Payment Transactions
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn() && (
+        resource.data.clientName == getUserData().name ||
+        isAdmin()
+      );
+      allow create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // MCP Routing Rules (Admin only write, signed in read)
+    match /mcpRules/{ruleId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Gateway Configuration (Admin only write, signed in read)
+    match /gatewayConfig/{configId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Invitation Logs (Admin only)
+    match /invitationLogs/{logId} {
+      allow read, create, update, delete: if isAdmin();
     }
   }
 }

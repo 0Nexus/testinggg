@@ -2,14 +2,16 @@
   "entities": {
     "users": {
       "title": "User",
-      "description": "User account profiles (Customers, Contractors, Admins)",
+      "description": "User account profiles (Homeowners, Contractors, Inspectors/Admins)",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "email": { "type": "string" },
         "name": { "type": "string" },
-        "role": { "type": "string" },
+        "companyName": { "type": "string" },
+        "role": { "type": "string", "enum": ["homeowner", "contractor", "inspector", "admin"] },
         "phone": { "type": "string" },
+        "passwordHash": { "type": "string" },
         "createdAt": { "type": "string" },
         "contractorProfile": {
           "type": "object",
@@ -25,15 +27,14 @@
           }
         }
       },
-      "required": ["email", "name", "role"]
+      "required": ["email", "name", "role", "passwordHash"]
     },
     "vettedContractors": {
       "title": "Vetted Contractor",
-      "description": "Admin and registered contractor directory entries",
+      "description": "Vetted contractor directory and discovered trade specialists",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "userId": { "type": "string" },
         "name": { "type": "string" },
         "companyName": { "type": "string" },
         "avatarUrl": { "type": "string" },
@@ -48,13 +49,16 @@
         "fixedQuoteEstimateGBP": { "type": "number" },
         "availability": { "type": "string" },
         "distanceMiles": { "type": "number" },
-        "bio": { "type": "string" }
+        "bio": { "type": "string" },
+        "isExternalDiscovered": { "type": "boolean" },
+        "invitationStatus": { "type": "string" },
+        "invitedAt": { "type": "string" }
       },
       "required": ["name", "companyName", "tradeType", "hourlyRateGBP"]
     },
     "projects": {
       "title": "Repair Job / Project",
-      "description": "Urgent repair jobs, milestones, escrow holds, and extra variation pay requests",
+      "description": "Renovation jobs, milestones, escrow holds, and extra variation pay requests",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -68,13 +72,111 @@
         "totalAmount": { "type": "number" },
         "currency": { "type": "string" },
         "status": { "type": "string" },
-        "createdAt": { "type": "string text" },
+        "createdAt": { "type": "string" },
         "damageDescription": { "type": "string" },
         "damageImages": { "type": "array", "items": { "type": "string" } },
         "milestones": { "type": "array" },
         "extraPayRequests": { "type": "array" }
       },
       "required": ["title", "clientName", "totalAmount"]
+    },
+    "transactions": {
+      "title": "Payment Transaction",
+      "description": "Escrow transaction records and gateway payout logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "projectTitle": { "type": "string" },
+        "milestoneId": { "type": "string" },
+        "milestoneTitle": { "type": "string" },
+        "clientName": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "gateway": { "type": "string" },
+        "paymentMethodUsed": { "type": "string" },
+        "status": { "type": "string" },
+        "gatewayRef": { "type": "string" },
+        "feeAmount": { "type": "number" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["projectId", "amount", "gateway"]
+    },
+    "mcpRules": {
+      "title": "MCP Routing Rule",
+      "description": "Merchant Custom Payment routing rules and threshold criteria",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "conditionType": { "type": "string" },
+        "operator": { "type": "string" },
+        "value": { "type": "string" },
+        "targetGateway": { "type": "string" },
+        "priority": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["name", "targetGateway"]
+    },
+    "gatewayConfig": {
+      "title": "Gateway Configuration",
+      "description": "Global Stripe and Airwallex configuration and fee structures",
+      "type": "object",
+      "properties": {
+        "mcpMode": { "type": "string" },
+        "mcpDefaultGateway": { "type": "string" },
+        "stripe": { "type": "object" },
+        "airwallex": { "type": "object" }
+      },
+      "required": ["mcpMode"]
+    },
+    "invitationLogs": {
+      "title": "Contractor Invitation Log",
+      "description": "Logs of invitations dispatched to trade specialists",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "contractorEmail": { "type": "string" },
+        "companyName": { "type": "string" },
+        "tradeCategory": { "type": "string" },
+        "jobTitle": { "type": "string" },
+        "sentAt": { "type": "string" },
+        "inviteToken": { "type": "string" },
+        "deliveryStatus": { "type": "string" },
+        "invitedBy": { "type": "string" }
+      },
+      "required": ["contractorEmail", "inviteToken"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profiles and credentials"
+    },
+    "/vettedContractors/{contractorId}": {
+      "schema": "vettedContractors",
+      "description": "Vetted trade contractor entries"
+    },
+    "/projects/{projectId}": {
+      "schema": "projects",
+      "description": "Renovation projects and milestones"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "transactions",
+      "description": "Escrow transaction logs"
+    },
+    "/mcpRules/{ruleId}": {
+      "schema": "mcpRules",
+      "description": "MCP routing rules"
+    },
+    "/gatewayConfig/{configId}": {
+      "schema": "gatewayConfig",
+      "description": "Gateway configuration"
+    },
+    "/invitationLogs/{logId}": {
+      "schema": "invitationLogs",
+      "description": "Invitation dispatch logs"
     }
   }
 }
