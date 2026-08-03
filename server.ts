@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -47,7 +48,19 @@ import {
 } from './src/types.js';
 
 const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
-const JWT_SECRET = process.env.JWT_SECRET || 'tidy_corp_secure_jwt_secret_key_2026';
+
+function resolveJwtSecret(): string {
+  if (process.env.JWT_SECRET) {
+    return process.env.JWT_SECRET;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('FATAL SECURITY ERROR: JWT_SECRET environment variable must be set in production to prevent token forgery.');
+  }
+  console.warn('[SECURITY WARNING] JWT_SECRET environment variable not provided. Ephemeral 256-bit secret generated for session safety.');
+  return crypto.randomBytes(32).toString('hex');
+}
+
+const JWT_SECRET = resolveJwtSecret();
 
 interface JwtPayload {
   userId: string;
@@ -290,14 +303,60 @@ async function startServer() {
     }
   });
 
-  app.use(express.json({ limit: '10mb' }));
+  // Airwallex Webhook Endpoint (mount raw body handler BEFORE express.json)
+  app.post('/api/webhooks/airwallex', express.raw({ type: 'application/json' }), (req: Request, res: Response) => {
+    const signature = (req.headers['x-signature'] || req.headers['x-airwallex-signature']) as string;
+    const timestamp = (req.headers['x-timestamp'] || req.headers['x-time']) as string;
+    const webhookSecret = process.env.AIRWALLEX_WEBHOOK_SECRET;
 
-  // Airwallex Webhook Endpoint
-  app.post('/api/webhooks/airwallex', (req: Request, res: Response) => {
-    const signature = req.headers['x-signature'];
-    console.log('Received Airwallex Webhook Event:', req.body?.name || req.body?.event);
-    res.json({ received: true, signatureVerified: Boolean(signature) });
+    let bodyStr = '';
+    let bodyObj: any = {};
+    if (Buffer.isBuffer(req.body)) {
+      bodyStr = req.body.toString('utf8');
+      try { bodyObj = JSON.parse(bodyStr); } catch (e) {}
+    } else if (typeof req.body === 'string') {
+      bodyStr = req.body;
+      try { bodyObj = JSON.parse(bodyStr); } catch (e) {}
+    } else {
+      bodyObj = req.body || {};
+      bodyStr = JSON.stringify(bodyObj);
+    }
+
+    if (!webhookSecret) {
+      return res.json({
+        received: true,
+        signatureVerified: false,
+        note: 'Webhook received. Configure AIRWALLEX_WEBHOOK_SECRET in environment for HMAC SHA-256 signature verification.'
+      });
+    }
+
+    if (!signature) {
+      return res.status(401).json({ error: 'Missing Airwallex signature header' });
+    }
+
+    const payloadToSign = timestamp ? `${timestamp}${bodyStr}` : bodyStr;
+    const expectedSignature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(payloadToSign)
+      .digest('hex');
+
+    let isValid = false;
+    try {
+      isValid = crypto.timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedSignature, 'utf8'));
+    } catch (e) {
+      isValid = false;
+    }
+
+    if (!isValid) {
+      console.error('Airwallex Webhook HMAC signature mismatch.');
+      return res.status(401).json({ error: 'Invalid Airwallex webhook signature.' });
+    }
+
+    console.log('Received & Cryptographically Verified Airwallex Webhook Event:', bodyObj?.name || bodyObj?.event);
+    res.json({ received: true, signatureVerified: true });
   });
+
+  app.use(express.json({ limit: '10mb' }));
 
   // Health check
   app.get('/api/health', (req: Request, res: Response) => {

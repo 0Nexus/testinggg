@@ -22,6 +22,7 @@ try {
 import { getAuth, signInAnonymously } from 'firebase/auth';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { initialProjects, defaultMCPRules, defaultGatewayConfig, initialTransactions, initialVettedContractors } from '../data/mockData.js';
 import { User, RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, VettedContractor, ContractorInvitationLog } from '../types.js';
@@ -31,7 +32,8 @@ export interface StoredUser extends User {
 }
 
 let db: Firestore | null = null;
-let defaultPasswordHashCache: string | null = null;
+let defaultUserPasswordHashCache: string | null = null;
+let adminPasswordHashCache: string | null = null;
 
 // In-memory fallback caches
 let memoryUsers: StoredUser[] = [];
@@ -42,11 +44,20 @@ let memoryTransactions: PaymentTransaction[] = [...initialTransactions];
 let memoryContractors: VettedContractor[] = [...initialVettedContractors];
 let memoryLogs: ContractorInvitationLog[] = [];
 
-async function getDefaultPasswordHash(): Promise<string> {
-  if (!defaultPasswordHashCache) {
-    defaultPasswordHashCache = await bcrypt.hash('password123', 10);
+async function getPasswordHash(passType: 'admin' | 'user'): Promise<string> {
+  if (passType === 'admin') {
+    if (!adminPasswordHashCache) {
+      const adminPass = process.env.ADMIN_INITIAL_PASSWORD || (process.env.NODE_ENV === 'production' ? crypto.randomBytes(16).toString('hex') : 'password123');
+      adminPasswordHashCache = await bcrypt.hash(adminPass, 10);
+    }
+    return adminPasswordHashCache;
+  } else {
+    if (!defaultUserPasswordHashCache) {
+      const userPass = process.env.DEMO_INITIAL_PASSWORD || 'password123';
+      defaultUserPasswordHashCache = await bcrypt.hash(userPass, 10);
+    }
+    return defaultUserPasswordHashCache;
   }
-  return defaultPasswordHashCache;
 }
 
 export async function initFirestoreDB(): Promise<Firestore | null> {
@@ -84,7 +95,9 @@ export function getFirestoreDB(): Firestore | null {
 
 // Seed initial dataset into Firestore if empty
 export async function seedFirestoreIfEmpty() {
-  const hash = await getDefaultPasswordHash();
+  const userHash = await getPasswordHash('user');
+  const adminHash = await getPasswordHash('admin');
+
   memoryUsers = [
     {
       id: 'usr-1',
@@ -92,7 +105,7 @@ export async function seedFirestoreIfEmpty() {
       name: 'Wassim Mehdaoui',
       companyName: 'Tidy Corp UK',
       role: 'contractor',
-      passwordHash: hash,
+      passwordHash: userHash,
       createdAt: new Date().toISOString()
     },
     {
@@ -101,7 +114,7 @@ export async function seedFirestoreIfEmpty() {
       name: 'Sarah Jenkins',
       companyName: 'Kensington Residence',
       role: 'homeowner',
-      passwordHash: hash,
+      passwordHash: userHash,
       createdAt: new Date().toISOString()
     },
     {
@@ -110,7 +123,7 @@ export async function seedFirestoreIfEmpty() {
       name: 'Compliance Inspector',
       companyName: 'Tidy Corp Regulatory',
       role: 'inspector',
-      passwordHash: hash,
+      passwordHash: adminHash,
       createdAt: new Date().toISOString()
     }
   ];
