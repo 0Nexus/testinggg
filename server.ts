@@ -253,9 +253,7 @@ function requireRole(allowedRoles: string[]) {
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 8080;
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Renovation Payment Hub Server running on http://0.0.0.0:${PORT}`);
-  });
+
 
 
   // Security Middlewares: CORS, Helmet, Rate Limiting
@@ -1382,10 +1380,7 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
-  startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);   // fail loud instead of hanging silently
-});
+
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Renovation Payment Hub Server running on http://0.0.0.0:${PORT}`);
