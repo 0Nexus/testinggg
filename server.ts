@@ -8,7 +8,6 @@ import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Stripe from 'stripe';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import {
   seedFirestoreIfEmpty,
@@ -1368,6 +1367,7 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
 
   // VITE MIDDLEWARE / STATIC SERVING
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
