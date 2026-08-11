@@ -25,10 +25,10 @@ export default function App() {
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
-  const [projects, setProjects] = useState<RenovationProject[]>(initialProjects);
+  const [projects, setProjects] = useState<RenovationProject[]>([]);
   const [mcpRules, setMcpRules] = useState<MCPRule[]>(defaultMCPRules);
   const [gatewayConfig, setGatewayConfig] = useState<GatewayConfig>(defaultGatewayConfig);
-  const [transactions, setTransactions] = useState<PaymentTransaction[]>(initialTransactions);
+  const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
 
   // Modals state
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
@@ -36,6 +36,17 @@ export default function App() {
 
   // Selected milestone for Client Portal simulation
   const [checkoutMilestoneId, setCheckoutMilestoneId] = useState<string | null>(null);
+
+  // Smart Day/Night Theme Mode state ('light' by default or stored)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    return (localStorage.getItem('tidy_theme') as 'light' | 'dark') || 'light';
+  });
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    localStorage.setItem('tidy_theme', nextTheme);
+  };
 
   // Protect internal feature tabs if user is not logged in
   useEffect(() => {
@@ -69,28 +80,64 @@ export default function App() {
     }
   }, []);
 
-  // Fetch initial app data from API
+  // Fetch app data from API whenever currentUser changes & auto-poll every 5s for real-time client-contractor sync
   useEffect(() => {
-    fetch('/api/projects')
-      .then(res => res.json())
-      .then(data => { if (Array.isArray(data)) setProjects(data); })
-      .catch(() => console.log('Using local initial projects state'));
+    const refreshData = () => {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
 
-    fetch('/api/mcp/rules')
-      .then(res => res.json())
-      .then(data => { if (Array.isArray(data)) setMcpRules(data); })
-      .catch(() => console.log('Using local initial rules state'));
+      if (currentUser) {
+        fetch('/api/projects', { headers })
+          .then(res => res.json())
+          .then(data => {
+            if (Array.isArray(data)) {
+              setProjects(data);
+              // Update selected project if active
+              setSelectedProject(prev => {
+                if (!prev) return null;
+                const match = data.find(p => p.id === prev.id);
+                return match || prev;
+              });
+            } else {
+              setProjects([]);
+            }
+          })
+          .catch(() => setProjects([]));
 
-    fetch('/api/gateways/config')
-      .then(res => res.json())
-      .then(data => { if (data && data.stripe) setGatewayConfig(data); })
-      .catch(() => console.log('Using local initial config state'));
+        fetch('/api/transactions', { headers })
+          .then(res => res.json())
+          .then(data => { if (Array.isArray(data)) setTransactions(data); else setTransactions([]); })
+          .catch(() => setTransactions([]));
+      } else {
+        setProjects([]);
+        setTransactions([]);
+      }
 
-    fetch('/api/transactions')
-      .then(res => res.json())
-      .then(data => { if (Array.isArray(data)) setTransactions(data); })
-      .catch(() => console.log('Using local initial transactions state'));
-  }, []);
+      fetch('/api/mcp/rules', { headers })
+        .then(res => res.json())
+        .then(data => { if (Array.isArray(data)) setMcpRules(data); })
+        .catch(() => console.log('Using local initial rules state'));
+
+      fetch('/api/gateways/config', { headers })
+        .then(res => res.json())
+        .then(data => { if (data && data.stripe) setGatewayConfig(data); })
+        .catch(() => console.log('Using local initial config state'));
+    };
+
+    refreshData();
+
+    if (currentUser) {
+      const interval = setInterval(refreshData, 5000);
+      window.addEventListener('focus', refreshData);
+      return () => {
+        clearInterval(interval);
+        window.removeEventListener('focus', refreshData);
+      };
+    }
+  }, [currentUser]);
 
   // Logout Handler
   const handleLogout = async () => {
@@ -113,9 +160,13 @@ export default function App() {
   // Handler: Save New Project
   const handleSaveProject = async (newProjData: Partial<RenovationProject>) => {
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch('/api/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(newProjData)
       });
       if (res.ok) {
@@ -182,9 +233,13 @@ export default function App() {
     cardDetails?: any
   ) => {
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch('/api/payments/pay', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           projectId,
           milestoneId,
@@ -222,9 +277,13 @@ export default function App() {
     setSelectedProject(updatedProject);
     setProjects(prev => prev.map(p => p.id === updatedProject.id ? updatedProject : p));
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       await fetch(`/api/projects/${updatedProject.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(updatedProject)
       });
     } catch (e) {
@@ -253,7 +312,9 @@ export default function App() {
   }
 
   return (
-    <div id="app-root" className="min-h-screen bg-[#0A1128] text-slate-100 font-sans antialiased flex flex-col">
+    <div id="app-root" className={`min-h-screen font-sans antialiased flex flex-col transition-colors duration-300 ${
+      theme === 'light' ? 'bg-slate-50 text-slate-900' : 'bg-[#0A1128] text-slate-100'
+    }`}>
       {/* Top Navbar (Only shown when user is logged in) */}
       {currentUser && (
         <Navbar
@@ -263,6 +324,8 @@ export default function App() {
           currentUser={currentUser}
           onLogout={handleLogout}
           onOpenAuthModal={() => setIsAuthModalOpen(true)}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
       )}
 
@@ -273,6 +336,8 @@ export default function App() {
             currentUser={currentUser}
             onNavigateTab={setActiveTab}
             onOpenAuthModal={() => setIsAuthModalOpen(true)}
+            theme={theme}
+            onToggleTheme={toggleTheme}
           />
         )}
 

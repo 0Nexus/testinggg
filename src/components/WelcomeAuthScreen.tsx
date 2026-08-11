@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, Lock, Eye, EyeOff, UserCheck, ArrowRight, Building2, AlertTriangle, CheckCircle2, Sparkles, KeyRound, Briefcase } from 'lucide-react';
+import { Shield, Lock, Eye, EyeOff, UserCheck, ArrowRight, Building2, AlertTriangle, CheckCircle2, Sparkles, Briefcase } from 'lucide-react';
 import { User } from '../types';
 import { TidyCorpLogo } from './TidyCorpLogo';
 
@@ -27,30 +27,6 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
   const [phone, setPhone] = useState('+44 20 7946 0999');
   const [certifications, setCertifications] = useState('Gas Safe Registered, TrustMark Approved');
   const [bio, setBio] = useState('10+ years experience in UK home repairs and emergency maintenance.');
-
-  // Quick Demo Auto-Fill & Login
-  const handleDemoLogin = async (demoEmail: string, demoRole: 'contractor' | 'homeowner' | 'inspector', demoName: string) => {
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: demoEmail, password: 'password123' })
-      });
-      const data = await res.json();
-      if (res.ok && data.token) {
-        localStorage.setItem('tidy_secure_token', data.token);
-        onLoginSuccess(data.user, data.token);
-      } else {
-        setError(data.error || 'Demo login failed');
-      }
-    } catch (err) {
-      setError('Connection error while logging in');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,49 +113,6 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
             <p className="text-slate-300 text-sm sm:text-base leading-relaxed font-normal">
               Sign in or create an account to access contract milestones, manage 90-day pre-authorization holds via Stripe Escrow &amp; Airwallex Direct Debit, and monitor Awaab's Law statutory hazard countdowns.
             </p>
-
-            {/* Quick Demo Accounts Banner */}
-            <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-3">
-              <div className="flex items-center space-x-2 text-xs font-mono font-bold text-[#FF7F00] uppercase tracking-wider">
-                <KeyRound className="h-4 w-4" />
-                <span>Instant One-Click Demo Access</span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-                <button
-                  id="btn-demo-contractor"
-                  type="button"
-                  onClick={() => handleDemoLogin('wassim.mehdaoui@tidycorp.co.uk', 'contractor', 'Wassim Mehdaoui')}
-                  disabled={isSubmitting}
-                  className="p-3 rounded-xl bg-slate-800 hover:bg-[#0057B8] text-white border border-slate-700/80 transition-all text-left flex flex-col justify-between group"
-                >
-                  <span className="text-xs font-black group-hover:text-amber-300">Wassim Mehdaoui</span>
-                  <span className="text-[10px] text-slate-400 group-hover:text-blue-100 font-medium">Tidy Corp Contractor</span>
-                </button>
-
-                <button
-                  id="btn-demo-homeowner"
-                  type="button"
-                  onClick={() => handleDemoLogin('sarah.jenkins@homeowner.co.uk', 'homeowner', 'Sarah Jenkins')}
-                  disabled={isSubmitting}
-                  className="p-3 rounded-xl bg-slate-800 hover:bg-[#0057B8] text-white border border-slate-700/80 transition-all text-left flex flex-col justify-between group"
-                >
-                  <span className="text-xs font-black group-hover:text-amber-300">Sarah Jenkins</span>
-                  <span className="text-[10px] text-slate-400 group-hover:text-blue-100 font-medium">Homeowner Client</span>
-                </button>
-
-                <button
-                  id="btn-demo-inspector"
-                  type="button"
-                  onClick={() => handleDemoLogin('admin@tidycorp.co.uk', 'inspector', 'Compliance Inspector')}
-                  disabled={isSubmitting}
-                  className="p-3 rounded-xl bg-slate-800 hover:bg-[#0057B8] text-white border border-slate-700/80 transition-all text-left flex flex-col justify-between group"
-                >
-                  <span className="text-xs font-black group-hover:text-amber-300">Inspector</span>
-                  <span className="text-[10px] text-slate-400 group-hover:text-blue-100 font-medium">Regulatory Surveyor</span>
-                </button>
-              </div>
-            </div>
 
             {/* Feature Bullet Highlights */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-slate-300 pt-2">

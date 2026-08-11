@@ -48,12 +48,12 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
           />
         </div>
 
-        <div className="flex items-center space-x-3">
-          <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold">
+        <div className="flex flex-wrap items-center gap-2.5 sm:space-x-3">
+          <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold overflow-x-auto max-w-full">
             <button
               id="filter-duration-all"
               onClick={() => setDurationFilter('all')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg transition-all text-[11px] sm:text-xs whitespace-nowrap ${
                 durationFilter === 'all' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
@@ -62,16 +62,16 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
             <button
               id="filter-duration-short"
               onClick={() => setDurationFilter('short')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg transition-all text-[11px] sm:text-xs whitespace-nowrap ${
                 durationFilter === 'short' ? 'bg-white text-[#0057B8] shadow-sm' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
-              &le;90 Days (Stripe Escrow)
+              &le;90 Days (Stripe)
             </button>
             <button
               id="filter-duration-long"
               onClick={() => setDurationFilter('long')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg transition-all text-[11px] sm:text-xs whitespace-nowrap ${
                 durationFilter === 'long' ? 'bg-white text-cyan-800 shadow-sm' : 'text-slate-500 hover:text-slate-900'
               }`}
             >
@@ -82,7 +82,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
           <button
             id="btn-create-project-manager"
             onClick={onOpenNewProject}
-            className="bg-[#0057B8] hover:bg-blue-700 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center space-x-2 shadow transition-all whitespace-nowrap"
+            className="bg-[#0057B8] hover:bg-blue-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl flex items-center space-x-1.5 shadow transition-all whitespace-nowrap shrink-0"
           >
             <Plus className="h-4 w-4" />
             <span>Create Project</span>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { RenovationProject, Milestone, PaymentGateway } from '../types';
+import { StructuredFrictionHoldButton } from './StructuredFrictionHoldButton';
 import { ShieldCheck, CreditCard, Building2, CheckCircle2, Lock, ArrowRight, Download, Sparkles, AlertCircle, Coins } from 'lucide-react';
 
 interface ClientCheckoutPortalProps {
@@ -286,22 +287,17 @@ export const ClientCheckoutPortal: React.FC<ClientCheckoutPortalProps> = ({
                 )}
               </div>
 
-              {/* Pay Button */}
-              <button
-                type="submit"
-                id="btn-submit-client-pay"
-                disabled={isProcessing}
-                className="w-full py-3.5 rounded-xl text-xs font-black text-slate-950 bg-[#FF7F00] hover:bg-amber-600 shadow-lg transition-all flex items-center justify-center space-x-2"
-              >
-                {isProcessing ? (
-                  <span>Authorizing Escrow...</span>
-                ) : (
-                  <>
-                    <span>Authorize £{currentMilestone.amount.toLocaleString()}</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </button>
+              {/* Pay Button with Structured Friction Protocol */}
+              <div className="pt-2">
+                <StructuredFrictionHoldButton
+                  amount={currentMilestone.amount}
+                  label={`Authorize £${currentMilestone.amount.toLocaleString()} Deposit`}
+                  reason={`Authorizing payment to Tidy Secure Escrow Vault via ${paymentMethod === 'direct_debit' ? 'Airwallex Direct Debit' : 'Stripe Instant Escrow'}.`}
+                  onConfirm={async () => {
+                    await handleProcessPayment({ preventDefault: () => {} } as any);
+                  }}
+                />
+              </div>
             </form>
           )}
         </div>

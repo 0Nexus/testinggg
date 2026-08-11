@@ -1,6 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { TidyCorpLogo } from './TidyCorpLogo';
+
+// Photorealistic Human Realism Generated Assets
+import ukRenovationHeroImg from '../assets/images/uk_renovation_hero_1786446306023.jpg';
+import ukBathroomRenovationImg from '../assets/images/uk_bathroom_renovation_1786447192323.jpg';
+import ukLivingRoomRenovationImg from '../assets/images/uk_livingroom_renovation_1786447205954.jpg';
+import ukLoftExtensionImg from '../assets/images/uk_loft_extension_1786447218269.jpg';
+
+import verifiedBuilderImg from '../assets/images/verified_uk_builder_1786446320820.jpg';
+import dreamWallImg from '../assets/images/dream_wall_livingroom_1786446336669.jpg';
+import escrowSafetyImg from '../assets/images/escrow_payment_safety_1786446346602.jpg';
+
 import {
   Shield,
   Zap,
@@ -12,6 +23,7 @@ import {
   AlertTriangle,
   Sparkles,
   ArrowRight,
+  ChevronLeft,
   ChevronRight,
   TrendingUp,
   Cpu,
@@ -39,21 +51,72 @@ import {
   Terminal,
   ShieldAlert,
   Sliders,
-  DollarSign
+  DollarSign,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 interface LandingPageProps {
   currentUser: User | null;
   onNavigateTab: (tab: 'urgent_ai' | 'quoting_agent' | 'pricing' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => void;
   onOpenAuthModal?: () => void;
+  theme?: 'light' | 'dark';
+  onToggleTheme?: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   currentUser,
   onNavigateTab,
-  onOpenAuthModal
+  onOpenAuthModal,
+  theme = 'light',
+  onToggleTheme
 }) => {
   const [sdkCopied, setSdkCopied] = useState(false);
+
+  // 4-Slide Photorealistic Human Realism Hero Carousel
+  const heroSlides = [
+    {
+      image: ukRenovationHeroImg,
+      title: 'Sunlit Kitchen Renovation',
+      location: 'Kensington, London • £45,000 Milestone Escrow',
+      tag: 'Slide 1/4: Sunlit Kitchen'
+    },
+    {
+      image: ukBathroomRenovationImg,
+      title: 'Luxury Marble Bathroom Suite',
+      location: 'Richmond, Surrey • Gas Safe & Water Safety Verified',
+      tag: 'Slide 2/4: Luxury Bathroom'
+    },
+    {
+      image: ukLivingRoomRenovationImg,
+      title: 'Living Room & Garden Bi-Folds',
+      location: 'Oxford, UK • AI Vision Inspection Complete',
+      tag: 'Slide 3/4: Living Area'
+    },
+    {
+      image: ukLoftExtensionImg,
+      title: 'Architectural Rear Glass Extension',
+      location: 'Bristol, UK • Building Safety Act Golden Thread',
+      tag: 'Slide 4/4: Glass Extension'
+    }
+  ];
+
+  const [currentHeroSlide, setCurrentHeroSlide] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentHeroSlide((prev) => (prev + 1) % heroSlides.length);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [heroSlides.length]);
+
+  const nextHeroSlide = () => {
+    setCurrentHeroSlide((prev) => (prev + 1) % heroSlides.length);
+  };
+
+  const prevHeroSlide = () => {
+    setCurrentHeroSlide((prev) => (prev - 1 + heroSlides.length) % heroSlides.length);
+  };
 
   const copySDK = () => {
     navigator.clipboard.writeText('<script src="https://cdn.tdysecure.com/sdk/v2/tdy-bootstrap.js" data-client-key="tdy_live_8f3c9b1d" async></script>');
@@ -103,8 +166,28 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               </button>
             </nav>
 
-            {/* Auth CTAs */}
+            {/* Auth CTAs & Theme Switcher */}
             <div className="flex items-center space-x-3">
+              {onToggleTheme && (
+                <button
+                  onClick={onToggleTheme}
+                  className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition-all flex items-center space-x-1.5 border border-slate-700"
+                  title={theme === 'dark' ? 'Switch to Magazine Light Mode' : 'Switch to Outdoor Site Dark Mode (#0A1128)'}
+                >
+                  {theme === 'dark' ? (
+                    <>
+                      <Sun className="h-4 w-4 text-amber-400" />
+                      <span className="hidden sm:inline text-[10px] font-bold text-amber-300">Light Mode</span>
+                    </>
+                  ) : (
+                    <>
+                      <Moon className="h-4 w-4 text-cyan-300" />
+                      <span className="hidden sm:inline text-[10px] font-bold text-cyan-200">Outdoor Site Dark</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               {onOpenAuthModal && (
                 <>
                   <button
@@ -158,11 +241,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </span>
                 <span className="px-3.5 py-2 rounded-xl bg-[#0A1128] border border-slate-800 text-cyan-300 flex items-center space-x-2 shadow-inner">
                   <Bot className="h-4 w-4 text-cyan-400" />
-                  <span>Multi-Agent AI Mesh</span>
+                  <span>AI Smart Repair Assistant</span>
                 </span>
                 <span className="px-3.5 py-2 rounded-xl bg-[#0A1128] border border-slate-800 text-amber-400 flex items-center space-x-2 shadow-inner">
                   <Lock className="h-4 w-4 text-amber-400" />
-                  <span>SHA-256 Stage Truth Ledger</span>
+                  <span>Tamper-Proof Building Safety Log</span>
                 </span>
               </div>
 
@@ -198,48 +281,99 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </div>
 
             {/* Hero Visual Card / Platform Preview Mockup */}
-            <div className="lg:col-span-5 bg-[#0A1128] border border-slate-800/90 rounded-3xl p-6 shadow-2xl space-y-4 relative">
-              <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-                <div className="flex items-center space-x-2">
-                  <div className="h-3 w-3 rounded-full bg-rose-500"></div>
-                  <div className="h-3 w-3 rounded-full bg-amber-500"></div>
-                  <div className="h-3 w-3 rounded-full bg-emerald-500"></div>
-                  <span className="text-[11px] font-mono text-slate-400 ml-2">TidyCorp OS v3.2</span>
+            <div className="lg:col-span-5 bg-[#0A1128] border border-slate-800/90 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-4 relative overflow-hidden group">
+              {/* Photorealistic 4-Slide Interactive Hero Image Carousel */}
+              <div className="relative h-56 sm:h-64 rounded-2xl overflow-hidden border border-slate-800 group/carousel">
+                <img
+                  src={heroSlides[currentHeroSlide].image}
+                  alt={heroSlides[currentHeroSlide].title}
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover transition-all duration-700 brightness-90 group-hover/carousel:scale-105"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-[#0A1128] via-[#0A1128]/30 to-transparent"></div>
+                
+                {/* Top Badge Overlay */}
+                <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-cyan-300 border border-cyan-500/30 px-3 py-1 rounded-full text-[10px] font-mono font-bold flex items-center space-x-1.5 shadow-md">
+                  <Sparkles className="h-3 w-3 text-amber-400" />
+                  <span>{heroSlides[currentHeroSlide].tag}</span>
                 </div>
-                <span className="text-[10px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-800 px-2.5 py-0.5 rounded-full uppercase font-bold">
+
+                {/* Bottom Caption Overlay */}
+                <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between">
+                  <div className="bg-[#0A1128]/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-700/80 max-w-[70%] space-y-0.5">
+                    <div className="text-white text-xs font-black truncate">
+                      {heroSlides[currentHeroSlide].title}
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-300 truncate">
+                      {heroSlides[currentHeroSlide].location}
+                    </div>
+                  </div>
+
+                  {/* Carousel Indicator Dots */}
+                  <div className="flex items-center space-x-1.5 bg-[#0A1128]/85 backdrop-blur-md p-1.5 rounded-full border border-slate-700/80">
+                    {heroSlides.map((_, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setCurrentHeroSlide(idx)}
+                        className={`h-2 rounded-full transition-all ${
+                          idx === currentHeroSlide ? 'w-5 bg-[#FF7F00]' : 'w-2 bg-slate-500 hover:bg-slate-300'
+                        }`}
+                        title={`Go to slide ${idx + 1}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Left Arrow Button */}
+                <button
+                  onClick={prevHeroSlide}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-slate-950/70 hover:bg-[#FF7F00] text-white border border-slate-700 flex items-center justify-center transition-all opacity-80 hover:opacity-100 shadow-md"
+                  title="Previous Project Photo"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+
+                {/* Right Arrow Button */}
+                <button
+                  onClick={nextHeroSlide}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-slate-950/70 hover:bg-[#FF7F00] text-white border border-slate-700 flex items-center justify-center transition-all opacity-80 hover:opacity-100 shadow-md"
+                  title="Next Project Photo"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                <div className="flex items-center space-x-2">
+                  <div className="h-2.5 w-2.5 rounded-full bg-rose-500"></div>
+                  <div className="h-2.5 w-2.5 rounded-full bg-amber-500"></div>
+                  <div className="h-2.5 w-2.5 rounded-full bg-emerald-500"></div>
+                  <span className="text-[11px] font-mono text-slate-400 ml-1">TidyCorp OS v3.2</span>
+                </div>
+                <span className="text-[10px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded-full uppercase font-bold">
                   100% Live Compliance
                 </span>
               </div>
 
               {/* Interactive Preview Cards */}
-              <div className="space-y-3 font-mono text-xs">
-                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800/80 flex items-center justify-between cursor-pointer hover:border-cyan-500/40 transition-all" onClick={() => handleFeatureAccess('checkout')}>
+              <div className="space-y-2.5 font-mono text-xs">
+                <div className="bg-[#0F172A] p-3.5 rounded-2xl border border-slate-800/80 flex items-center justify-between cursor-pointer hover:border-cyan-500/40 transition-all" onClick={() => handleFeatureAccess('checkout')}>
                   <div>
                     <span className="text-slate-400 text-[10px] uppercase block">Active Escrow Tally</span>
-                    <span className="text-white font-black text-lg">£758,210.00</span>
+                    <span className="text-white font-black text-base">£758,210.00</span>
                   </div>
                   <span className="px-2.5 py-1 rounded-xl bg-cyan-950/80 text-cyan-300 border border-cyan-800 text-[10px] font-bold">
                     90-Day Custodial
                   </span>
                 </div>
 
-                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800/80 flex items-center justify-between cursor-pointer hover:border-amber-500/40 transition-all" onClick={() => handleFeatureAccess('compliance')}>
+                <div className="bg-[#0F172A] p-3.5 rounded-2xl border border-slate-800/80 flex items-center justify-between cursor-pointer hover:border-amber-500/40 transition-all" onClick={() => handleFeatureAccess('compliance')}>
                   <div>
                     <span className="text-slate-400 text-[10px] uppercase block">Awaab's Law Triage</span>
-                    <span className="text-amber-400 font-bold text-sm">12 New Reports (24h SLA)</span>
+                    <span className="text-amber-400 font-bold text-xs sm:text-sm">12 New Reports (24h SLA)</span>
                   </div>
-                  <span className="px-2.5 py-1 rounded-xl bg-amber-950/80 text-amber-300 border border-amber-800 text-[10px] font-bold">
+                  <span className="px-2 py-1 rounded-xl bg-amber-950/80 text-amber-300 border border-amber-800 text-[10px] font-bold">
                     Auto-Dispatched
-                  </span>
-                </div>
-
-                <div className="bg-[#0F172A] p-4 rounded-2xl border border-slate-800/80 flex items-center justify-between cursor-pointer hover:border-emerald-500/40 transition-all" onClick={() => handleFeatureAccess('contractors')}>
-                  <div>
-                    <span className="text-slate-400 text-[10px] uppercase block">Contractor Vetting Score</span>
-                    <span className="text-emerald-400 font-bold text-sm">98% Trust Score</span>
-                  </div>
-                  <span className="px-2.5 py-1 rounded-xl bg-emerald-950/80 text-emerald-300 border border-emerald-800 text-[10px] font-bold">
-                    W3C Verified VC
                   </span>
                 </div>
               </div>
@@ -651,6 +785,108 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
         </section>
 
+        {/* 6.5 HUMAN REALISM VISUAL SHOWCASE (PDF Pages 1, 5, 6, 8) */}
+        <section className="space-y-8">
+          <div className="text-center max-w-3xl mx-auto space-y-3">
+            <span className="text-xs font-mono font-bold text-[#FF7F00] uppercase tracking-wider flex items-center justify-center space-x-1.5">
+              <Camera className="h-4 w-4 text-amber-400" />
+              <span>Human Realism Visual Design Framework</span>
+            </span>
+            <h2 className="text-2xl sm:text-4xl font-black text-white">
+              Authentic UK Property Care in Action
+            </h2>
+            <p className="text-slate-300 text-sm leading-relaxed">
+              Replacing generic stock art and sterile software diagrams with photorealistic imagery of modern UK homes, certified trade professionals, and live Tidy Corp app interfaces.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {/* Gallery Item 1: Modern Kitchen Renovation */}
+            <div className="bg-[#0F172A] border border-slate-800 rounded-3xl overflow-hidden hover:border-cyan-500/50 transition-all group flex flex-col justify-between shadow-xl">
+              <div className="relative h-48 overflow-hidden">
+                <img
+                  src={ukRenovationHeroImg}
+                  alt="Modern Sunlit UK Kitchen Renovation"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-cyan-300 border border-cyan-800 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold">
+                  Completed Scope
+                </div>
+              </div>
+              <div className="p-5 space-y-2">
+                <h3 className="text-sm font-extrabold text-white">Sunlit Kitchen Renovation</h3>
+                <p className="text-slate-400 text-xs">
+                  Pristine finish with verified milestone sign-offs and automatic building safety records.
+                </p>
+              </div>
+            </div>
+
+            {/* Gallery Item 2: Verified UK Builder */}
+            <div className="bg-[#0F172A] border border-slate-800 rounded-3xl overflow-hidden hover:border-amber-500/50 transition-all group flex flex-col justify-between shadow-xl">
+              <div className="relative h-48 overflow-hidden">
+                <img
+                  src={verifiedBuilderImg}
+                  alt="Verified UK Trade Engineer"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-amber-300 border border-amber-800 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold">
+                  Certified Trade Pro
+                </div>
+              </div>
+              <div className="p-5 space-y-2">
+                <h3 className="text-sm font-extrabold text-white">Digital Skill Passport</h3>
+                <p className="text-slate-400 text-xs">
+                  Gas Safe, NICEIC, and insurance credentials checked autonomously in under 30 seconds.
+                </p>
+              </div>
+            </div>
+
+            {/* Gallery Item 3: Dream Wall Visualizer */}
+            <div className="bg-[#0F172A] border border-slate-800 rounded-3xl overflow-hidden hover:border-emerald-500/50 transition-all group flex flex-col justify-between shadow-xl">
+              <div className="relative h-48 overflow-hidden">
+                <img
+                  src={dreamWallImg}
+                  alt="Dream Wall AI Interior Remodel Concept"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-emerald-300 border border-emerald-800 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold">
+                  Interactive AI Tool
+                </div>
+              </div>
+              <div className="p-5 space-y-2">
+                <h3 className="text-sm font-extrabold text-white">Dream Wall 3D Concept</h3>
+                <p className="text-slate-400 text-xs">
+                  Instant visual room transformation converting text ideas into itemized material lists.
+                </p>
+              </div>
+            </div>
+
+            {/* Gallery Item 4: Escrow Payment Safety */}
+            <div className="bg-[#0F172A] border border-slate-800 rounded-3xl overflow-hidden hover:border-purple-500/50 transition-all group flex flex-col justify-between shadow-xl">
+              <div className="relative h-48 overflow-hidden">
+                <img
+                  src={escrowSafetyImg}
+                  alt="On-Site Escrow Deposit Confirmation"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-purple-300 border border-purple-800 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold">
+                  FCA Compliant Vault
+                </div>
+              </div>
+              <div className="p-5 space-y-2">
+                <h3 className="text-sm font-extrabold text-white">Tidy Secure Escrow</h3>
+                <p className="text-slate-400 text-xs">
+                  Ring-fenced milestone deposits protected with 3-second hold gesture &amp; Face ID.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* 7. REAL-WORLD STAKEHOLDER IMPACT & TABS (PDF Page 31) */}
         <section className="space-y-8">
           <div className="text-center max-w-3xl mx-auto space-y-3">
@@ -663,43 +899,82 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-[#0F172A] border border-slate-800/90 rounded-3xl p-6 space-y-4 hover:border-cyan-500/50 transition-all">
-              <div className="h-12 w-12 rounded-2xl bg-cyan-950 border border-cyan-800 flex items-center justify-center text-cyan-400">
-                <Users className="h-6 w-6" />
+            <div className="bg-[#0F172A] border border-slate-800/90 rounded-3xl overflow-hidden hover:border-cyan-500/50 transition-all shadow-xl group">
+              <div className="h-36 overflow-hidden relative">
+                <img
+                  src={dreamWallImg}
+                  alt="Homeowner Sarah"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-[#0F172A] to-transparent"></div>
               </div>
-              <div>
-                <span className="text-xs font-mono text-slate-400 uppercase font-bold">01. Homeowner</span>
-                <h3 className="text-xl font-black text-white">Sarah</h3>
+              <div className="p-6 space-y-3 pt-2">
+                <div className="flex items-center space-x-3">
+                  <div className="h-10 w-10 rounded-xl bg-cyan-950 border border-cyan-800 flex items-center justify-center text-cyan-400 shrink-0">
+                    <Users className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-mono text-slate-400 uppercase font-bold block">01. Homeowner</span>
+                    <h3 className="text-lg font-black text-white">Sarah</h3>
+                  </div>
+                </div>
+                <p className="text-slate-300 text-xs leading-relaxed">
+                  Uses AI Dreamwall to visualize her kitchen remodel, deposits funds into escrow, and approves payments stress-free upon verified milestone delivery.
+                </p>
               </div>
-              <p className="text-slate-300 text-xs leading-relaxed">
-                Uses AI Dreamwall to visualize her kitchen remodel, deposits funds into escrow, and approves payments stress-free upon verified milestone delivery.
-              </p>
             </div>
 
-            <div className="bg-[#0F172A] border border-slate-800/90 rounded-3xl p-6 space-y-4 hover:border-amber-500/50 transition-all">
-              <div className="h-12 w-12 rounded-2xl bg-amber-950 border border-amber-800 flex items-center justify-center text-amber-400">
-                <HardHat className="h-6 w-6" />
+            <div className="bg-[#0F172A] border border-slate-800/90 rounded-3xl overflow-hidden hover:border-amber-500/50 transition-all shadow-xl group">
+              <div className="h-36 overflow-hidden relative">
+                <img
+                  src={verifiedBuilderImg}
+                  alt="Tradesperson Brian"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-[#0F172A] to-transparent"></div>
               </div>
-              <div>
-                <span className="text-xs font-mono text-slate-400 uppercase font-bold">02. Skilled Tradesperson</span>
-                <h3 className="text-xl font-black text-white">Brian</h3>
+              <div className="p-6 space-y-3 pt-2">
+                <div className="flex items-center space-x-3">
+                  <div className="h-10 w-10 rounded-xl bg-amber-950 border border-amber-800 flex items-center justify-center text-amber-400 shrink-0">
+                    <HardHat className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-mono text-slate-400 uppercase font-bold block">02. Skilled Tradesperson</span>
+                    <h3 className="text-lg font-black text-white">Brian</h3>
+                  </div>
+                </div>
+                <p className="text-slate-300 text-xs leading-relaxed">
+                  Onboards via the Centralized Notification Hub, embeds <code className="text-cyan-300">tdy-bootstrap.js</code> on his site, and receives instant 48-hour auto-payouts.
+                </p>
               </div>
-              <p className="text-slate-300 text-xs leading-relaxed">
-                Onboards via the Centralized Notification Hub, embeds <code className="text-cyan-300">tdy-bootstrap.js</code> on his site, and receives instant 48-hour auto-payouts.
-              </p>
             </div>
 
-            <div className="bg-[#0F172A] border border-slate-800/90 rounded-3xl p-6 space-y-4 hover:border-emerald-500/50 transition-all">
-              <div className="h-12 w-12 rounded-2xl bg-emerald-950 border border-emerald-800 flex items-center justify-center text-emerald-400">
-                <Building2 className="h-6 w-6" />
+            <div className="bg-[#0F172A] border border-slate-800/90 rounded-3xl overflow-hidden hover:border-emerald-500/50 transition-all shadow-xl group">
+              <div className="h-36 overflow-hidden relative">
+                <img
+                  src={escrowSafetyImg}
+                  alt="Housing Manager Olivia"
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-[#0F172A] to-transparent"></div>
               </div>
-              <div>
-                <span className="text-xs font-mono text-slate-400 uppercase font-bold">03. Housing Manager</span>
-                <h3 className="text-xl font-black text-white">Olivia</h3>
+              <div className="p-6 space-y-3 pt-2">
+                <div className="flex items-center space-x-3">
+                  <div className="h-10 w-10 rounded-xl bg-emerald-950 border border-emerald-800 flex items-center justify-center text-emerald-400 shrink-0">
+                    <Building2 className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-mono text-slate-400 uppercase font-bold block">03. Housing Manager</span>
+                    <h3 className="text-lg font-black text-white">Olivia</h3>
+                  </div>
+                </div>
+                <p className="text-slate-300 text-xs leading-relaxed">
+                  Manages 500+ residential units on a desktop command center, achieving 100% statutory compliance and zero Housing Ombudsman fines.
+                </p>
               </div>
-              <p className="text-slate-300 text-xs leading-relaxed">
-                Manages 500+ residential units on a desktop command center, achieving 100% statutory compliance and zero Housing Ombudsman fines.
-              </p>
             </div>
           </div>
         </section>

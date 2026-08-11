@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { RenovationProject, Milestone } from '../types';
+import { StructuredFrictionHoldButton } from './StructuredFrictionHoldButton';
 import {
   X,
   User,
@@ -55,11 +56,18 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   const [extraMediaType, setExtraMediaType] = useState<'image' | 'video'>('image');
   const [isSubmittingExtra, setIsSubmittingExtra] = useState(false);
 
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('tidy_secure_token');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return headers;
+  };
+
   const handleContractorResponse = async (status: 'accepted' | 'declined') => {
     try {
       const res = await fetch(`/api/projects/${project.id}/contractor-status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ status })
       });
       if (res.ok) {
@@ -81,7 +89,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     try {
       const res = await fetch(`/api/projects/${project.id}/extra-pay`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           requestedBy: project.assignedContractorName || 'Assigned Contractor',
           contractorId: project.assignedContractorId,
@@ -115,7 +123,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     try {
       const res = await fetch(`/api/projects/${project.id}/extra-pay/${extraId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ status })
       });
       if (res.ok) {
@@ -141,7 +149,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${milestoneId}/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: getAuthHeaders()
       });
       if (res.ok) {
         const data = await res.json();
@@ -158,7 +166,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${milestoneId}/release`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: getAuthHeaders()
       });
       if (res.ok) {
         const data = await res.json();
@@ -184,7 +192,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${disputingMilestoneId}/dispute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           reason: disputeReason,
           description: disputeDescription,
@@ -212,7 +220,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${milestoneId}/admin-resolve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ adminDecision, adminNotes })
       });
       if (res.ok) {
@@ -803,13 +811,14 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                               <span>Contest Work</span>
                             </button>
 
-                            <button
-                              onClick={() => handleReleaseEscrow(m.id)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-3.5 py-1.5 rounded-xl text-xs shadow-md flex items-center space-x-1"
-                            >
-                              <Check className="h-3.5 w-3.5" />
-                              <span>Approve &amp; Release Funds Now</span>
-                            </button>
+                            <div className="min-w-[200px]">
+                              <StructuredFrictionHoldButton
+                                amount={m.amount}
+                                label="Approve & Release Funds Now"
+                                reason={`AI inspection verified site photos, milestone scope, and Building Safety Act compliance for ${m.title}.`}
+                                onConfirm={() => handleReleaseEscrow(m.id)}
+                              />
+                            </div>
                           </div>
                         </div>
                       </div>

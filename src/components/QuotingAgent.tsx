@@ -188,13 +188,18 @@ export const QuotingAgent: React.FC<QuotingAgentProps> = ({
     if (!quoteResult) return;
 
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch('/api/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: quoteResult.projectTitle,
-          clientName: currentUser?.name || 'Homeowner / Housing Association',
-          clientEmail: currentUser?.email || 'client@tidycorp.co.uk',
+          clientName: currentUser?.name || 'Homeowner Client',
+          clientEmail: currentUser?.email || '',
+          clientId: currentUser?.id || '',
           totalAmount: quoteResult.recommendedTotalGBP,
           currency: 'GBP',
           startDate: new Date().toISOString().split('T')[0],

@@ -109,7 +109,8 @@ export const UrgentRepairAIForm: React.FC<UrgentRepairAIFormProps> = ({
       id: `proj-rep-${Date.now().toString(36)}`,
       title: `${repairType} - ${selectedContractor.companyName}`,
       clientName: currentUser ? currentUser.name : 'Homeowner Client',
-      clientEmail: currentUser ? currentUser.email : 'homeowner@example.com',
+      clientEmail: currentUser ? currentUser.email : '',
+      clientId: currentUser ? currentUser.id : '',
       totalAmount: agreedAmount,
       currency: 'GBP',
       startDate: new Date().toISOString().split('T')[0],
@@ -134,9 +135,13 @@ export const UrgentRepairAIForm: React.FC<UrgentRepairAIFormProps> = ({
     };
 
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch('/api/projects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(newProj)
       });
       if (res.ok) {
