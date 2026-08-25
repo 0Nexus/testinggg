@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Navbar } from './components/Navbar';
+import { Sidebar } from './components/Sidebar';
 import { LandingPage } from './components/LandingPage';
 import { DashboardOverview } from './components/DashboardOverview';
 import { ProjectManager } from './components/ProjectManager';
@@ -37,6 +37,9 @@ export default function App() {
 
   // Selected milestone for Client Portal simulation
   const [checkoutMilestoneId, setCheckoutMilestoneId] = useState<string | null>(null);
+
+  // Sidebar collapse state
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
   // Cookie Consent Preferences Modal state
   const [isCookieModalOpen, setIsCookieModalOpen] = useState<boolean>(false);
@@ -309,19 +312,19 @@ export default function App() {
         <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-[#0057B8] to-[#FF7F00] flex items-center justify-center text-white shadow-xl animate-pulse mb-4">
           <Shield className="h-7 w-7 text-white" />
         </div>
-        <h2 className="text-xl font-black tracking-tight">Tidy Corp <span className="text-[#FF7F00]">AI Secure</span></h2>
+        <h2 className="text-xl font-black tracking-tight">tidy corporation LTD</h2>
         <p className="text-slate-400 text-xs mt-1">Verifying Escrow Portal Authentication...</p>
       </div>
     );
   }
 
   return (
-    <div id="app-root" className={`min-h-screen font-sans antialiased flex flex-col transition-colors duration-300 ${
+    <div id="app-root" className={`min-h-screen font-sans antialiased flex flex-col lg:flex-row transition-colors duration-300 ${
       theme === 'light' ? 'bg-slate-50 text-slate-900' : 'bg-[#0A1128] text-slate-100'
     }`}>
-      {/* Top Navbar (Only shown when user is logged in) */}
+      {/* Sidebar Navigation (Only shown when user is logged in) */}
       {currentUser && (
-        <Navbar
+        <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           gatewayConfig={gatewayConfig}
@@ -331,11 +334,13 @@ export default function App() {
           theme={theme}
           onToggleTheme={toggleTheme}
           onOpenCookieSettings={() => setIsCookieModalOpen(true)}
+          collapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
         />
       )}
 
-      {/* Main View Container */}
-      <main className={`flex-1 w-full mx-auto ${activeTab === 'landing' ? 'px-0 py-0' : 'max-w-7xl px-4 sm:px-6 lg:px-8 py-8'}`}>
+      {/* Main View Container (with left offset on desktop when sidebar is rendered) */}
+      <main className={`flex-1 w-full transition-all duration-300 ${currentUser ? (isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64') : ''} ${activeTab === 'landing' ? 'px-0 py-0' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'}`}>
         {activeTab === 'landing' && (
           <LandingPage
             currentUser={currentUser}

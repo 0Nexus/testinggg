@@ -77,15 +77,10 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
       <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <TidyCorpLogo className="h-10 w-10" />
-            <div>
-              <span className="font-black text-xl tracking-tight text-white block">
-                Tidy Corp <span className="text-[#FF7F00]">AI Secure</span>
-              </span>
-              <span className="text-xs text-slate-400 font-medium hidden sm:inline">
-                UK Property Renovation Escrow &amp; Statutory Compliance Engine
-              </span>
-            </div>
+            <TidyCorpLogo className="h-9 w-9" />
+            <span className="font-black text-lg tracking-tight text-white">
+              tidy corporation LTD
+            </span>
           </div>
 
           <div className="flex items-center space-x-2 text-xs text-slate-400 font-mono">

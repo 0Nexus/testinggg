@@ -20,14 +20,9 @@ export const TidyCorpLogo: React.FC<TidyCorpLogoProps> = ({
       />
 
       {showText && (
-        <div className="flex flex-col justify-center">
-          <span className="text-base font-black tracking-tight text-white leading-tight">
-            Tidy Corporation <span className="text-[#FF7F00]">Ltd</span>
-          </span>
-          <span className="text-[10px] font-mono text-cyan-400 tracking-widest uppercase">
-            AI Property OS
-          </span>
-        </div>
+        <span className="text-sm sm:text-base font-black tracking-tight text-white whitespace-nowrap">
+          tidy corporation LTD
+        </span>
       )}
     </div>
   );
