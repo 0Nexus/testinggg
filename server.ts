@@ -263,31 +263,34 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Enable trust proxy for Cloud Run and reverse proxy ingress
-  app.set('trust proxy', 1);
+  // Enable trust proxy for Cloud Run, GFE, and container ingress
+  app.set('trust proxy', true);
 
   // Initialize and seed Firestore database
   await seedFirestoreIfEmpty();
 
-  // Security Middlewares: CORS, Helmet, Rate Limiting
+  // Security Middlewares: CORS, Helmet
   app.use(cors({ origin: true, credentials: true }));
   app.use(helmet({ contentSecurityPolicy: false }));
 
-  // Global Rate Limiter
-  const globalLimiter = rateLimit({
+  // Scoped API Rate Limiter (Only applies to /api endpoints, never to static assets or SPA views)
+  const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 300,
+    max: 2000,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false, default: false },
+    skip: (req: Request) => req.path === '/health' || req.path.startsWith('/webhooks/'),
     message: { error: 'Too many requests from this IP, please try again later.' }
   });
-  app.use(globalLimiter);
+  app.use('/api', apiLimiter);
 
-  // Strict Auth Rate Limiter
+  // Auth Rate Limiter
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 20,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
     validate: { xForwardedForHeader: false, default: false },
     message: { error: 'Too many authentication attempts, please try again in 15 minutes.' }
   });
