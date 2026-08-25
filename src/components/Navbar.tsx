@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CreditCard, ShieldCheck, Layers, AlertTriangle, Settings2, Shield, LogOut, Sparkles, UserCheck, Calculator, Crown, Home, LogIn, Menu, X, Sun, Moon } from 'lucide-react';
+import { CreditCard, ShieldCheck, Layers, AlertTriangle, Settings2, Shield, LogOut, Sparkles, UserCheck, Calculator, Crown, Home, LogIn, Menu, X, Sun, Moon, Cookie } from 'lucide-react';
 import { GatewayConfig, User } from '../types';
 import { TidyCorpLogo } from './TidyCorpLogo';
 
@@ -12,6 +12,7 @@ interface NavbarProps {
   onOpenAuthModal?: () => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  onOpenCookieSettings?: () => void;
 }
 
 interface NavItem {
@@ -31,7 +32,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
   onOpenAuthModal,
   theme = 'dark',
-  onToggleTheme
+  onToggleTheme,
+  onOpenCookieSettings
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -212,6 +214,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span className="hidden lg:inline text-[10px] font-bold text-cyan-200">Site Dark</span>
                   </>
                 )}
+              </button>
+            )}
+
+            {/* Cookie & Privacy Preferences Button */}
+            {onOpenCookieSettings && (
+              <button
+                id="btn-cookie-settings-nav"
+                onClick={onOpenCookieSettings}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-amber-400 transition-all border border-slate-700/80 shrink-0"
+                title="Cookie & UK Privacy Preferences"
+              >
+                <Cookie className="h-4 w-4" />
               </button>
             )}
 

@@ -25,7 +25,7 @@ import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { initialProjects, defaultMCPRules, defaultGatewayConfig, initialTransactions, initialVettedContractors } from '../data/mockData.js';
-import { User, RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, VettedContractor, ContractorInvitationLog } from '../types.js';
+import { User, RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, VettedContractor, ContractorInvitationLog, AirwallexCheckoutSession } from '../types.js';
 
 export interface StoredUser extends User {
   passwordHash: string;
@@ -35,12 +35,22 @@ let db: Firestore | null = null;
 let defaultUserPasswordHashCache: string | null = null;
 let adminPasswordHashCache: string | null = null;
 
-// In-memory fallback caches
+export interface UserScope {
+  id?: string;
+  userId?: string;
+  email?: string;
+  name?: string;
+  role?: string;
+}
+
+const shouldSeedMockData = process.env.SEED_MOCK_DATA === 'true';
+
+// In-memory fallback caches (Empty by default for clean user isolation unless SEED_MOCK_DATA=true)
 let memoryUsers: StoredUser[] = [];
-let memoryProjects: RenovationProject[] = [...initialProjects];
+let memoryProjects: RenovationProject[] = shouldSeedMockData ? [...initialProjects] : [];
 let memoryMCPRules: MCPRule[] = [...defaultMCPRules];
 let memoryGatewayConfig: GatewayConfig = { ...defaultGatewayConfig };
-let memoryTransactions: PaymentTransaction[] = [...initialTransactions];
+let memoryTransactions: PaymentTransaction[] = shouldSeedMockData ? [...initialTransactions] : [];
 let memoryContractors: VettedContractor[] = [...initialVettedContractors];
 let memoryLogs: ContractorInvitationLog[] = [];
 
@@ -93,8 +103,13 @@ export function getFirestoreDB(): Firestore | null {
   return db;
 }
 
-// Seed initial dataset into Firestore if empty
+// Seed initial dataset into Firestore if empty - ONLY when explicitly enabled via SEED_MOCK_DATA=true
 export async function seedFirestoreIfEmpty() {
+  if (process.env.SEED_MOCK_DATA !== 'true') {
+    console.log('[Firestore] Mock data seeding disabled (SEED_MOCK_DATA != true). Preserving clean database state.');
+    return;
+  }
+
   const userHash = await getPasswordHash('user');
   const adminHash = await getPasswordHash('admin');
 
@@ -235,22 +250,51 @@ export async function saveUser(user: StoredUser): Promise<User> {
   return userPublic as User;
 }
 
-// Projects CRUD
-export async function getProjectsFromDB(): Promise<RenovationProject[]> {
+// Projects CRUD - Scoped to authenticated user permissions
+export async function getProjectsFromDB(userScope?: UserScope): Promise<RenovationProject[]> {
+  if (!userScope) {
+    return [];
+  }
+
+  let allProjects: RenovationProject[] = [];
+
   try {
     const firestore = await initFirestoreDB();
     if (firestore) {
       const snap = await getDocs(collection(firestore, 'projects'));
       if (!snap.empty) {
-        const list = snap.docs.map(d => d.data() as RenovationProject);
-        memoryProjects = list;
-        return list;
+        allProjects = snap.docs.map(d => d.data() as RenovationProject);
+        memoryProjects = allProjects;
+      } else {
+        allProjects = memoryProjects;
       }
+    } else {
+      allProjects = memoryProjects;
     }
   } catch (e) {
     console.log('getProjectsFromDB Firestore fallback to memory');
+    allProjects = memoryProjects;
   }
-  return memoryProjects;
+
+  // Admins and Inspectors can inspect all projects across the platform
+  if (userScope.role === 'admin' || userScope.role === 'inspector') {
+    return allProjects;
+  }
+
+  const userId = userScope.id || userScope.userId || '';
+  const userEmail = (userScope.email || '').toLowerCase().trim();
+  const userName = (userScope.name || '').toLowerCase().trim();
+
+  return allProjects.filter(p => {
+    const isClient = (p.clientId && p.clientId === userId) ||
+      (userEmail && p.clientEmail && p.clientEmail.toLowerCase() === userEmail) ||
+      (userName && p.clientName && p.clientName.toLowerCase() === userName);
+
+    const isContractor = (p.assignedContractorId && p.assignedContractorId === userId) ||
+      (userName && p.assignedContractorName && p.assignedContractorName.toLowerCase() === userName);
+
+    return isClient || isContractor;
+  });
 }
 
 export async function getProjectByIdFromDB(id: string): Promise<RenovationProject | null> {
@@ -413,22 +457,43 @@ export async function saveGatewayConfigToDB(config: GatewayConfig): Promise<Gate
   return config;
 }
 
-// Transactions CRUD
-export async function getTransactionsFromDB(): Promise<PaymentTransaction[]> {
+// Transactions CRUD - Scoped to authenticated user permissions
+export async function getTransactionsFromDB(userScope?: UserScope): Promise<PaymentTransaction[]> {
+  if (!userScope) {
+    return [];
+  }
+
+  let allTransactions: PaymentTransaction[] = [];
+
   try {
     const firestore = await initFirestoreDB();
     if (firestore) {
       const snap = await getDocs(collection(firestore, 'transactions'));
       if (!snap.empty) {
-        const list = snap.docs.map(d => d.data() as PaymentTransaction);
-        memoryTransactions = list;
-        return list;
+        allTransactions = snap.docs.map(d => d.data() as PaymentTransaction);
+        memoryTransactions = allTransactions;
+      } else {
+        allTransactions = memoryTransactions;
       }
+    } else {
+      allTransactions = memoryTransactions;
     }
   } catch (e) {
     console.log('getTransactionsFromDB Firestore fallback to memory');
+    allTransactions = memoryTransactions;
   }
-  return memoryTransactions;
+
+  if (userScope.role === 'admin' || userScope.role === 'inspector') {
+    return allTransactions;
+  }
+
+  const userProjects = await getProjectsFromDB(userScope);
+  const userProjectIds = new Set(userProjects.map(p => p.id));
+  const userName = (userScope.name || '').toLowerCase().trim();
+
+  return allTransactions.filter(t => {
+    return userProjectIds.has(t.projectId) || (userName && t.clientName && t.clientName.toLowerCase() === userName);
+  });
 }
 
 export async function saveTransactionToDB(tx: PaymentTransaction): Promise<PaymentTransaction> {
@@ -476,3 +541,96 @@ export async function saveInvitationLogToDB(log: ContractorInvitationLog): Promi
   memoryLogs.unshift(log);
   return log;
 }
+
+// Cookie Consent Audit CRUD
+let memoryCookieConsents: any[] = [];
+
+export async function saveCookieConsentToDB(audit: any): Promise<any> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await setDoc(doc(firestore, 'cookieConsents', audit.id), audit);
+    }
+  } catch (e) {
+    console.log('saveCookieConsentToDB Firestore fallback to memory');
+  }
+
+  memoryCookieConsents.unshift(audit);
+  return audit;
+}
+
+export async function getCookieConsentsFromDB(): Promise<any[]> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      const snap = await getDocs(collection(firestore, 'cookieConsents'));
+      if (!snap.empty) {
+        const list = snap.docs.map(d => d.data());
+        memoryCookieConsents = list;
+        return list;
+      }
+    }
+  } catch (e) {
+    console.log('getCookieConsentsFromDB Firestore fallback to memory');
+  }
+  return memoryCookieConsents;
+}
+
+// --- AIRWALLEX CHECKOUT SESSIONS CRUD ---
+let memoryAirwallexSessions: AirwallexCheckoutSession[] = [];
+
+export async function saveAirwallexSessionToDB(session: AirwallexCheckoutSession): Promise<AirwallexCheckoutSession> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await setDoc(doc(firestore, 'airwallexCheckoutSessions', session.id), session);
+    }
+  } catch (e) {
+    console.log('saveAirwallexSessionToDB Firestore fallback to memory');
+  }
+
+  const existingIdx = memoryAirwallexSessions.findIndex(s => s.id === session.id);
+  if (existingIdx >= 0) {
+    memoryAirwallexSessions[existingIdx] = session;
+  } else {
+    memoryAirwallexSessions.unshift(session);
+  }
+  return session;
+}
+
+export async function getAirwallexSessionFromDB(sessionId: string): Promise<AirwallexCheckoutSession | null> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      const snap = await getDoc(doc(firestore, 'airwallexCheckoutSessions', sessionId));
+      if (snap.exists()) {
+        const session = snap.data() as AirwallexCheckoutSession;
+        const idx = memoryAirwallexSessions.findIndex(s => s.id === sessionId);
+        if (idx >= 0) memoryAirwallexSessions[idx] = session;
+        else memoryAirwallexSessions.unshift(session);
+        return session;
+      }
+    }
+  } catch (e) {
+    console.log('getAirwallexSessionFromDB Firestore fallback to memory');
+  }
+
+  const found = memoryAirwallexSessions.find(s => s.id === sessionId);
+  return found || null;
+}
+
+export async function updateAirwallexSessionInDB(
+  sessionId: string,
+  updates: Partial<AirwallexCheckoutSession>
+): Promise<AirwallexCheckoutSession | null> {
+  const current = await getAirwallexSessionFromDB(sessionId);
+  if (!current) return null;
+
+  const merged: AirwallexCheckoutSession = {
+    ...current,
+    ...updates
+  };
+
+  return await saveAirwallexSessionToDB(merged);
+}
+

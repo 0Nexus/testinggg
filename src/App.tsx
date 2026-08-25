@@ -13,6 +13,7 @@ import { UrgentRepairAIForm } from './components/UrgentRepairAIForm';
 import { QuotingAgent } from './components/QuotingAgent';
 import { AdminContractorManager } from './components/AdminContractorManager';
 import { PricingSubscriptionPortal } from './components/PricingSubscriptionPortal';
+import { CookieConsentBanner } from './components/CookieConsentBanner';
 import { RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, User } from './types';
 import { initialProjects, defaultMCPRules, defaultGatewayConfig, initialTransactions } from './data/mockData';
 import { Shield, X, LogIn } from 'lucide-react';
@@ -36,6 +37,9 @@ export default function App() {
 
   // Selected milestone for Client Portal simulation
   const [checkoutMilestoneId, setCheckoutMilestoneId] = useState<string | null>(null);
+
+  // Cookie Consent Preferences Modal state
+  const [isCookieModalOpen, setIsCookieModalOpen] = useState<boolean>(false);
 
   // Smart Day/Night Theme Mode state ('light' by default or stored)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -326,6 +330,7 @@ export default function App() {
           onOpenAuthModal={() => setIsAuthModalOpen(true)}
           theme={theme}
           onToggleTheme={toggleTheme}
+          onOpenCookieSettings={() => setIsCookieModalOpen(true)}
         />
       )}
 
@@ -338,6 +343,7 @@ export default function App() {
             onOpenAuthModal={() => setIsAuthModalOpen(true)}
             theme={theme}
             onToggleTheme={toggleTheme}
+            onOpenCookieSettings={() => setIsCookieModalOpen(true)}
           />
         )}
 
@@ -371,6 +377,7 @@ export default function App() {
           <PricingSubscriptionPortal
             currentUser={currentUser}
             onUserUpdate={setCurrentUser}
+            onNavigateTab={setActiveTab}
           />
         )}
 
@@ -456,6 +463,11 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* UK GDPR & PECR Cookie Consent Banner & Preferences Modal */}
+      <CookieConsentBanner
+        forceOpenModal={isCookieModalOpen}
+        onCloseModal={() => setIsCookieModalOpen(false)}
+      />
     </div>
   );
 }

@@ -66,9 +66,15 @@ export const UrgentRepairAIForm: React.FC<UrgentRepairAIFormProps> = ({
     setErrorMessage(null);
 
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const res = await fetch('/api/ai/estimate-repair', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           repairType,
           description,
@@ -83,6 +89,10 @@ export const UrgentRepairAIForm: React.FC<UrgentRepairAIFormProps> = ({
         setErrorMessage(data.error || 'There has been an error processing your request with Gemini AI. Please try again.');
         setStep('form');
         return;
+      }
+
+      if (data.remainingCredits !== undefined && currentUser?.subscription) {
+        currentUser.subscription.remainingCredits = data.remainingCredits;
       }
 
       setEstimate(data);

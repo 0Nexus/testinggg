@@ -404,5 +404,71 @@ export interface ContractorInvitationLog {
   invitedBy: string;
 }
 
+export interface CookieConsentPreferences {
+  strictlyNecessary: boolean; // Always true (Session, Auth, Airwallex Token, CSRF)
+  functional: boolean;        // Theme, localized currency, saved quote drafts
+  analytics: boolean;         // Latency telemetry, milestone velocity metrics
+  marketing: boolean;         // Partner warranty tracking, invite attribution
+  consentedAt: string;        // ISO timestamp
+  consentVersion: string;     // e.g. "2026.1"
+  userIpHash?: string;
+}
+
+export interface CookieConsentAudit {
+  id: string;
+  userId?: string;
+  userEmail?: string;
+  preferences: CookieConsentPreferences;
+  userAgent: string;
+  timestamp: string;
+}
+
+export interface AirwallexCheckoutSession {
+  id: string;
+  clientSecret: string;
+  checkoutUrl: string;
+  itemType: 'plan' | 'care_package' | 'credits' | 'escrow_pass';
+  itemId: string;
+  planName: string;
+  billingInterval: 'monthly' | 'annual';
+  amount: number;
+  currency: string;
+  customerEmail: string;
+  customerName: string;
+  companyName?: string;
+  companyVatNumber?: string;
+  billingAddress?: string;
+  status: 'pending' | 'succeeded' | 'failed' | 'cancelled';
+  successUrl: string;
+  cancelUrl: string;
+  createdAt: string;
+  completedAt?: string;
+  gatewayRef?: string;
+  paymentMethodUsed?: string;
+  webhookDelivered?: boolean;
+}
+
+export interface AirwallexWebhookEvent {
+  id: string;
+  name: 'billing.subscription.created' | 'payment_intent.succeeded' | 'mandate.activated' | 'checkout.session.completed';
+  accountId: string;
+  createdAt: string;
+  data: {
+    object: {
+      id: string;
+      checkoutSessionId?: string;
+      amount?: number;
+      currency?: string;
+      status: string;
+      customerEmail?: string;
+      customerName?: string;
+      metadata?: Record<string, any>;
+      paymentMethod?: string;
+      gatewayRef?: string;
+    };
+  };
+}
+
+
 
 

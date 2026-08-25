@@ -105,9 +105,15 @@ export const QuotingAgent: React.FC<QuotingAgentProps> = ({
     setErrorMessage(null);
 
     try {
+      const token = localStorage.getItem('tidy_secure_token');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const res = await fetch('/api/ai/quoting-agent', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           projectTitle,
           tradeCategory,
@@ -123,6 +129,9 @@ export const QuotingAgent: React.FC<QuotingAgentProps> = ({
         setErrorMessage(data.error || 'Failed to calculate trade quote.');
       } else {
         setQuoteResult(data);
+        if (data.remainingCredits !== undefined && currentUser?.subscription) {
+          currentUser.subscription.remainingCredits = data.remainingCredits;
+        }
       }
     } catch (err: any) {
       console.error(err);

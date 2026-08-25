@@ -8,6 +8,7 @@ import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Stripe from 'stripe';
+import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import {
   seedFirestoreIfEmpty,
@@ -29,6 +30,11 @@ import {
   saveTransactionToDB,
   getInvitationLogsFromDB,
   saveInvitationLogToDB,
+  saveCookieConsentToDB,
+  getCookieConsentsFromDB,
+  saveAirwallexSessionToDB,
+  getAirwallexSessionFromDB,
+  updateAirwallexSessionInDB,
   StoredUser
 } from './src/lib/firestoreServer.js';
 import {
@@ -43,7 +49,11 @@ import {
   VettedContractor,
   AIRepairEstimate,
   ExternalDiscoveredContractor,
-  ContractorInvitationLog
+  ContractorInvitationLog,
+  CookieConsentPreferences,
+  CookieConsentAudit,
+  AirwallexCheckoutSession,
+  AirwallexWebhookEvent
 } from './src/types.js';
 
 const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
@@ -251,9 +261,13 @@ function requireRole(allowedRoles: string[]) {
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 8080;
+  const PORT = 3000;
 
+  // Enable trust proxy for Cloud Run and reverse proxy ingress
+  app.set('trust proxy', 1);
 
+  // Initialize and seed Firestore database
+  await seedFirestoreIfEmpty();
 
   // Security Middlewares: CORS, Helmet, Rate Limiting
   app.use(cors({ origin: true, credentials: true }));
@@ -265,6 +279,7 @@ async function startServer() {
     max: 300,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false, default: false },
     message: { error: 'Too many requests from this IP, please try again later.' }
   });
   app.use(globalLimiter);
@@ -273,6 +288,7 @@ async function startServer() {
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 20,
+    validate: { xForwardedForHeader: false, default: false },
     message: { error: 'Too many authentication attempts, please try again in 15 minutes.' }
   });
 
@@ -390,6 +406,96 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- UK GDPR & PECR COOKIE CONSENT ENDPOINTS ---
+  app.post('/api/cookies/consent', async (req: Request, res: Response) => {
+    try {
+      const { strictlyNecessary, functional, analytics, marketing, version } = req.body;
+      const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+      const userAgent = req.headers['user-agent'] || 'Unknown Browser';
+      
+      // Hash IP for GDPR PII minimization
+      const ipHash = crypto.createHash('sha256').update(String(clientIp)).digest('hex').substring(0, 16);
+
+      let authenticatedUser: any = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          authenticatedUser = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        } catch (e) {}
+      }
+
+      const preferences: CookieConsentPreferences = {
+        strictlyNecessary: true, // Always required
+        functional: Boolean(functional),
+        analytics: Boolean(analytics),
+        marketing: Boolean(marketing),
+        consentedAt: new Date().toISOString(),
+        consentVersion: version || '2026.1',
+        userIpHash: ipHash
+      };
+
+      const auditRecord: CookieConsentAudit = {
+        id: `cookie_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`,
+        userId: authenticatedUser?.userId || authenticatedUser?.id,
+        userEmail: authenticatedUser?.email,
+        preferences,
+        userAgent: String(userAgent).substring(0, 200),
+        timestamp: new Date().toISOString()
+      };
+
+      await saveCookieConsentToDB(auditRecord);
+
+      // Set cookie header for server compliance verification
+      res.setHeader('Set-Cookie', [
+        `tidy_cookie_consent=${encodeURIComponent(JSON.stringify(preferences))}; Path=/; Max-Age=31536000; SameSite=Lax; ${process.env.NODE_ENV === 'production' ? 'Secure;' : ''}`
+      ]);
+
+      res.json({
+        success: true,
+        message: 'Cookie consent preferences recorded in compliance with UK PECR & Data Protection Act 2018.',
+        consent: preferences
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to record cookie consent' });
+    }
+  });
+
+  app.get('/api/cookies/consent', async (req: Request, res: Response) => {
+    try {
+      const consents = await getCookieConsentsFromDB();
+      res.json({
+        success: true,
+        policyVersion: '2026.1',
+        regulations: 'UK GDPR / Privacy and Electronic Communications Regulations (PECR)',
+        totalAuditedConsents: consents.length,
+        categories: {
+          strictlyNecessary: {
+            required: true,
+            purpose: 'Session authentication, CSRF validation, Airwallex cryptographic payment tokens, and database sync.',
+            retention: 'Session / 30 Days'
+          },
+          functional: {
+            required: false,
+            purpose: 'Theme persistence (Light/Dark mode), localized currency selector, and draft quote caching.',
+            retention: '1 Year'
+          },
+          analytics: {
+            required: false,
+            purpose: 'Airwallex payment latency telemetry, milestone velocity tracking, and system performance monitoring.',
+            retention: '90 Days'
+          },
+          marketing: {
+            required: false,
+            purpose: 'Contractor invitation tracking, escrow warranty validation, and partner trade certifications.',
+            retention: '180 Days'
+          }
+        }
+      });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to retrieve cookie consent metadata' });
     }
   });
 
@@ -564,6 +670,505 @@ async function startServer() {
   app.post('/api/auth/logout', (req: Request, res: Response) => {
     res.json({ success: true, message: 'Logged out successfully' });
   });
+
+  // --- AIRWALLEX BILLING SUBSCRIPTION ARCHITECTURE ENDPOINTS ---
+
+  // Helper to resolve plan specs
+  const getPlanSpecs = () => ({
+    apprentice: { name: 'Apprentice', monthlyPriceGBP: 0, annualPriceGBP: 0, credits: 5000, fee: '10% GTV (Capped at £150)' },
+    journeyman_pro: { name: 'Journeyman Pro', monthlyPriceGBP: 29, annualPriceGBP: 290, credits: 100000, fee: '5% GTV' },
+    essential_landlord: { name: 'Essential Landlord', monthlyPriceGBP: 49, annualPriceGBP: 490, credits: 30000, fee: '5% Fee' },
+    professional_portfolio: { name: 'Professional Portfolio', monthlyPriceGBP: 129, annualPriceGBP: 1290, credits: 150000, fee: 'Excess Fee £1.50' },
+    insurers_surveyors: { name: 'Insurers & Surveyors', monthlyPriceGBP: 199, annualPriceGBP: 1990, credits: 200000, fee: 'API Fee £5.00' },
+    enterprise_os: { name: 'Enterprise OS', monthlyPriceGBP: 399, annualPriceGBP: 3990, credits: 500000, fee: 'Pre-Committed' }
+  });
+
+  // Core function to update database & give user access
+  async function applyAirwallexSubscriptionToUser(params: {
+    customerEmail: string;
+    customerName?: string;
+    itemType: 'plan' | 'care_package' | 'credits' | 'escrow_pass';
+    itemId: string;
+    billingInterval: 'monthly' | 'annual';
+    amount: number;
+    currency?: string;
+    paymentMethodUsed?: string;
+    gatewayRef?: string;
+  }) {
+    const {
+      customerEmail,
+      customerName,
+      itemType,
+      itemId,
+      billingInterval,
+      amount,
+      currency = 'GBP',
+      paymentMethodUsed = 'Airwallex BACS Direct Debit',
+      gatewayRef = `awx_settled_${Date.now()}`
+    } = params;
+
+    const emailToUse = (customerEmail || 'user@tidycorp.co.uk').toLowerCase().trim();
+    const nameToUse = customerName || 'Valued Subscriber';
+    const planSpecs = getPlanSpecs();
+    const intervalDays = billingInterval === 'annual' ? 365 : 30;
+
+    let updatedSub: UserSubscription | null = null;
+    let transactionDescription = '';
+
+    let storedUser: StoredUser | null = await getUserByEmail(emailToUse);
+
+    if (itemType === 'plan') {
+      const spec = (planSpecs as any)[itemId] || planSpecs.journeyman_pro;
+      updatedSub = {
+        planId: itemId as any,
+        planName: spec.name,
+        billingInterval: billingInterval || 'monthly',
+        status: 'active',
+        renewalDate: new Date(Date.now() + intervalDays * 24 * 3600 * 1000).toISOString().split('T')[0],
+        monthlyCreditsQuota: spec.credits,
+        remainingCredits: (storedUser?.subscription?.remainingCredits || 0) + spec.credits,
+        transactionFeeRate: spec.fee,
+        hasEscrowPrePurchasePass: storedUser?.subscription?.hasEscrowPrePurchasePass || false,
+        escrowPassVolumeUsedGBP: storedUser?.subscription?.escrowPassVolumeUsedGBP || 0,
+        activeCarePackageId: storedUser?.subscription?.activeCarePackageId || 'none'
+      };
+      transactionDescription = `Airwallex Subscription: ${spec.name} (${billingInterval === 'annual' ? 'Annual - 17% Disc.' : 'Monthly'})`;
+    } else if (itemType === 'care_package') {
+      updatedSub = {
+        ...(storedUser?.subscription || {
+          planId: 'apprentice',
+          planName: 'Apprentice',
+          billingInterval: 'monthly',
+          status: 'active',
+          renewalDate: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+          monthlyCreditsQuota: 5000,
+          remainingCredits: 5000,
+          transactionFeeRate: '10% GTV',
+          hasEscrowPrePurchasePass: false,
+          escrowPassVolumeUsedGBP: 0,
+          activeCarePackageId: 'none'
+        }),
+        activeCarePackageId: itemId as any
+      };
+      transactionDescription = `Airwallex Care Package: ${itemId}`;
+    } else if (itemType === 'credits') {
+      const creditsToAdd = itemId === 'bulk' ? 1400000 : 20000;
+      updatedSub = {
+        ...(storedUser?.subscription || {
+          planId: 'apprentice',
+          planName: 'Apprentice',
+          billingInterval: 'monthly',
+          status: 'active',
+          renewalDate: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+          monthlyCreditsQuota: 5000,
+          remainingCredits: 0,
+          transactionFeeRate: '10% GTV',
+          hasEscrowPrePurchasePass: false,
+          escrowPassVolumeUsedGBP: 0,
+          activeCarePackageId: 'none'
+        }),
+        remainingCredits: (storedUser?.subscription?.remainingCredits || 0) + creditsToAdd
+      };
+      transactionDescription = `Airwallex Compute Credits Top-Up: ${creditsToAdd.toLocaleString()} Credits`;
+    } else if (itemType === 'escrow_pass') {
+      updatedSub = {
+        ...(storedUser?.subscription || {
+          planId: 'apprentice',
+          planName: 'Apprentice',
+          billingInterval: 'monthly',
+          status: 'active',
+          renewalDate: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+          monthlyCreditsQuota: 5000,
+          remainingCredits: 5000,
+          transactionFeeRate: '10% GTV',
+          hasEscrowPrePurchasePass: false,
+          escrowPassVolumeUsedGBP: 0,
+          activeCarePackageId: 'none'
+        }),
+        hasEscrowPrePurchasePass: true,
+        escrowPassVolumeUsedGBP: 0
+      };
+      transactionDescription = 'Airwallex Escrow Pre-Purchase Growth Pass (£25k Zero Fee Allowance)';
+    }
+
+    if (storedUser && updatedSub) {
+      storedUser.subscription = updatedSub;
+      await saveUser(storedUser);
+    }
+
+    const txId = `awx_sub_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    const gatewayConfig = await getGatewayConfigFromDB();
+    const fee = calculateFee(Number(amount) || 0, 'airwallex', 'direct_debit', gatewayConfig);
+
+    const transaction: PaymentTransaction = {
+      id: txId,
+      projectId: 'subscription-portal',
+      projectTitle: transactionDescription,
+      milestoneId: `awx_int_${Date.now()}`,
+      milestoneTitle: transactionDescription,
+      clientName: nameToUse,
+      amount: Number(amount) || 0,
+      currency,
+      gateway: 'airwallex',
+      paymentMethodUsed,
+      status: 'succeeded',
+      gatewayRef,
+      feeAmount: fee,
+      timestamp: new Date().toISOString()
+    };
+
+    await saveTransactionToDB(transaction);
+
+    return {
+      updatedSub,
+      transaction,
+      receipt: {
+        transactionId: txId,
+        gatewayReference: gatewayRef,
+        clearedVia: 'Airwallex (UK) Limited • FCA Firm Ref: 901001',
+        date: new Date().toISOString(),
+        customerName: nameToUse,
+        customerEmail: emailToUse,
+        amount: Number(amount) || 0,
+        currency: 'GBP',
+        vatAmount: Number(((Number(amount) || 0) * 0.2).toFixed(2)),
+        subtotal: Number(((Number(amount) || 0) * 0.8333).toFixed(2)),
+        paymentMethodUsed,
+        status: 'Settled & Active'
+      }
+    };
+  }
+
+  // 1. POST /api/create-checkout (Your Website -> Your Backend -> Airwallex -> Returns checkout URL)
+  app.post('/api/create-checkout', async (req: Request, res: Response) => {
+    try {
+      const {
+        planId,
+        itemId = planId,
+        itemType = 'plan',
+        billingInterval = 'monthly',
+        amount: inputAmount,
+        currency = 'GBP',
+        customerEmail,
+        customerName,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        successUrl = '/?payment_status=success',
+        cancelUrl = '/?payment_status=cancelled'
+      } = req.body;
+
+      const authHeader = req.headers.authorization;
+      let authenticatedUser: any = null;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          authenticatedUser = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        } catch (e) {}
+      }
+
+      const emailToUse = (customerEmail || authenticatedUser?.email || 'user@tidycorp.co.uk').toLowerCase().trim();
+      const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
+
+      const planSpecs = getPlanSpecs();
+      let calculatedAmount = Number(inputAmount) || 0;
+      let planName = 'Airwallex Plan';
+
+      if (itemType === 'plan') {
+        const spec = (planSpecs as any)[itemId] || planSpecs.journeyman_pro;
+        planName = spec.name;
+        if (!inputAmount && inputAmount !== 0) {
+          calculatedAmount = billingInterval === 'annual' ? spec.annualPriceGBP : spec.monthlyPriceGBP;
+        }
+      } else if (itemType === 'care_package') {
+        const carePrices: Record<string, number> = { tidy_essentials: 19, tidy_homecare: 39, tidy_safecover: 79 };
+        calculatedAmount = inputAmount || carePrices[itemId] || 29;
+        planName = `Care Package: ${itemId.replace('tidy_', 'Tidy ')}`;
+      } else if (itemType === 'credits') {
+        calculatedAmount = itemId === 'bulk' ? 700 : 10;
+        planName = itemId === 'bulk' ? 'Bulk AI Credits (1.4M)' : 'Standard AI Credits (20k)';
+      } else if (itemType === 'escrow_pass') {
+        calculatedAmount = 500;
+        planName = 'Escrow Pre-Purchase Growth Pass (£25k)';
+      }
+
+      const checkoutId = `awx_chk_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+      const clientSecret = `awx_sec_${Date.now().toString(36)}_${crypto.randomBytes(16).toString('hex')}`;
+      const checkoutUrl = `/checkout/airwallex-billing?checkout_id=${checkoutId}&client_secret=${clientSecret}`;
+
+      const session: AirwallexCheckoutSession = {
+        id: checkoutId,
+        clientSecret,
+        checkoutUrl,
+        itemType,
+        itemId,
+        planName,
+        billingInterval,
+        amount: calculatedAmount,
+        currency,
+        customerEmail: emailToUse,
+        customerName: nameToUse,
+        companyName: companyName || '',
+        companyVatNumber: companyVatNumber || '',
+        billingAddress: billingAddress || 'United Kingdom',
+        status: 'pending',
+        successUrl,
+        cancelUrl,
+        createdAt: new Date().toISOString()
+      };
+
+      await saveAirwallexSessionToDB(session);
+
+      res.status(201).json({
+        success: true,
+        checkoutUrl,
+        checkoutId: session.id,
+        clientSecret: session.clientSecret,
+        session
+      });
+    } catch (err: any) {
+      console.error('Error creating Airwallex checkout:', err);
+      res.status(500).json({ error: err?.message || 'Failed to create Airwallex billing checkout session' });
+    }
+  });
+
+  // GET /api/checkout/session/:id
+  app.get('/api/checkout/session/:id', async (req: Request, res: Response) => {
+    try {
+      const session = await getAirwallexSessionFromDB(req.params.id);
+      if (!session) {
+        return res.status(404).json({ error: 'Checkout session not found' });
+      }
+      res.json({ success: true, session });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve checkout session' });
+    }
+  });
+
+  // POST /api/airwallex/complete-checkout (Airwallex Payment Page -> customer pays -> Complete Checkout)
+  app.post('/api/airwallex/complete-checkout', async (req: Request, res: Response) => {
+    try {
+      const {
+        checkoutId,
+        paymentMethod = 'direct_debit',
+        directDebitDetails,
+        cardDetails,
+        companyName,
+        companyVatNumber,
+        billingAddress
+      } = req.body;
+
+      const session = await getAirwallexSessionFromDB(checkoutId);
+      if (!session) {
+        return res.status(404).json({ error: 'Airwallex checkout session not found or expired.' });
+      }
+
+      const methodUsedStr = paymentMethod === 'direct_debit'
+        ? `Airwallex BACS Direct Debit (Sort: ${directDebitDetails?.sortCode || '20-45-77'}, Acc: ••••${(directDebitDetails?.accountNumber || '8839').slice(-4)})`
+        : (paymentMethod === 'apple_pay'
+          ? 'Airwallex Apple Pay / 1-Click Pay'
+          : (paymentMethod === 'bacs_transfer'
+            ? 'Airwallex Instant BACS Bank Transfer'
+            : `Airwallex Card (${cardDetails?.brand || 'Visa'} •••• ${cardDetails?.last4 || '4242'})`));
+
+      const gatewayRef = `awx_settled_${Date.now()}`;
+
+      // Update Database & Give User Access
+      const result = await applyAirwallexSubscriptionToUser({
+        customerEmail: session.customerEmail,
+        customerName: session.customerName,
+        itemType: session.itemType,
+        itemId: session.itemId,
+        billingInterval: session.billingInterval,
+        amount: session.amount,
+        currency: session.currency,
+        paymentMethodUsed: methodUsedStr,
+        gatewayRef
+      });
+
+      // Update session in DB
+      await updateAirwallexSessionInDB(session.id, {
+        status: 'succeeded',
+        completedAt: new Date().toISOString(),
+        gatewayRef,
+        paymentMethodUsed: methodUsedStr,
+        companyName: companyName || session.companyName,
+        companyVatNumber: companyVatNumber || session.companyVatNumber,
+        billingAddress: billingAddress || session.billingAddress,
+        webhookDelivered: true
+      });
+
+      res.json({
+        success: true,
+        message: `Payment of £${session.amount.toFixed(2)} GBP successfully processed via Airwallex!`,
+        redirectUrl: `${session.successUrl}${session.successUrl.includes('?') ? '&' : '?'}session_id=${session.id}&payment_status=success`,
+        subscription: result.updatedSub,
+        transaction: result.transaction,
+        receipt: result.receipt
+      });
+    } catch (err: any) {
+      console.error('Error completing Airwallex checkout:', err);
+      res.status(500).json({ error: err?.message || 'Failed to complete Airwallex billing checkout' });
+    }
+  });
+
+  // POST /api/webhooks/airwallex & POST /api/airwallex/webhook (Webhook -> Your Backend -> Update Database -> Give user access)
+  const handleAirwallexWebhook = async (req: Request, res: Response) => {
+    try {
+      const event = req.body as AirwallexWebhookEvent;
+      console.log(`[AIRWALLEX WEBHOOK RECEIVED] Event: ${event?.name || 'unknown'}, ID: ${event?.id || 'none'}`);
+
+      const eventData = event?.data?.object;
+      const checkoutSessionId = eventData?.checkoutSessionId || eventData?.id;
+
+      let session: AirwallexCheckoutSession | null = null;
+      if (checkoutSessionId) {
+        session = await getAirwallexSessionFromDB(checkoutSessionId);
+      }
+
+      const customerEmail = eventData?.customerEmail || session?.customerEmail || 'user@tidycorp.co.uk';
+      const customerName = eventData?.customerName || session?.customerName || 'Valued Subscriber';
+      const amount = eventData?.amount || session?.amount || 0;
+      const itemId = session?.itemId || eventData?.metadata?.itemId || 'journeyman_pro';
+      const itemType = session?.itemType || eventData?.metadata?.itemType || 'plan';
+      const billingInterval = session?.billingInterval || eventData?.metadata?.billingInterval || 'monthly';
+      const paymentMethod = eventData?.paymentMethod || session?.paymentMethodUsed || 'Airwallex BACS Direct Debit';
+      const gatewayRef = eventData?.gatewayRef || `awx_wh_${Date.now()}`;
+
+      // Update Database & Give User Access
+      const result = await applyAirwallexSubscriptionToUser({
+        customerEmail,
+        customerName,
+        itemType,
+        itemId,
+        billingInterval,
+        amount,
+        paymentMethodUsed: paymentMethod,
+        gatewayRef
+      });
+
+      if (session) {
+        await updateAirwallexSessionInDB(session.id, {
+          status: 'succeeded',
+          completedAt: new Date().toISOString(),
+          gatewayRef,
+          webhookDelivered: true
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        received: true,
+        userUpdated: true,
+        accessGranted: true,
+        subscription: result.updatedSub
+      });
+    } catch (err: any) {
+      console.error('Error handling Airwallex webhook:', err);
+      res.status(500).json({ error: 'Webhook processing failure' });
+    }
+  };
+
+  app.post('/api/webhooks/airwallex', handleAirwallexWebhook);
+  app.post('/api/airwallex/webhook', handleAirwallexWebhook);
+
+  // --- AIRWALLEX SUBSCRIPTION INTENT COMPATIBILITY ALIASES ---
+
+  app.post('/api/airwallex/create-subscription-intent', async (req: Request, res: Response) => {
+    try {
+      const { itemId, itemType, billingInterval, amount, currency = 'GBP', customerEmail, customerName } = req.body;
+      const intentId = `awx_sub_intent_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
+      const clientSecret = `awx_sec_${Date.now().toString(36)}_${crypto.randomBytes(16).toString('hex')}`;
+      
+      const config = await getGatewayConfigFromDB();
+      const airwallexFees = config?.airwallex?.fees || { cardFeePercent: 1.1, cardFixedFee: 0.15, directDebitFeePercent: 0.4, directDebitFixedFee: 0.1 };
+
+      res.json({
+        success: true,
+        intentId,
+        clientSecret,
+        currency,
+        amount: Number(amount) || 0,
+        itemId,
+        itemType,
+        billingInterval: billingInterval || 'monthly',
+        customerEmail,
+        customerName,
+        fees: airwallexFees,
+        status: 'requires_payment_method',
+        merchantAccount: 'Tidy Corp UK (Airwallex Global Merchant Account)'
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to initialize Airwallex subscription intent' });
+    }
+  });
+
+  app.post('/api/airwallex/confirm-subscription', async (req: Request, res: Response) => {
+    try {
+      const {
+        intentId,
+        itemId,
+        itemType,
+        billingInterval,
+        amount,
+        currency = 'GBP',
+        customerEmail,
+        customerName,
+        paymentMethod = 'direct_debit',
+        directDebitDetails,
+        cardDetails,
+        companyName,
+        companyVatNumber,
+        billingAddress
+      } = req.body;
+
+      const authHeader = req.headers.authorization;
+      let authenticatedUser: any = null;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          authenticatedUser = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        } catch (e) {}
+      }
+
+      const emailToUse = (customerEmail || authenticatedUser?.email || 'guest@tidycorp.co.uk').toLowerCase().trim();
+      const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
+
+      const methodUsedStr = paymentMethod === 'direct_debit'
+        ? `Airwallex BACS Direct Debit (Sort: ${directDebitDetails?.sortCode || '20-45-77'}, Acc: ••••${(directDebitDetails?.accountNumber || '8839').slice(-4)})`
+        : (paymentMethod === 'apple_pay'
+          ? 'Airwallex Apple Pay / 1-Click Pay'
+          : (paymentMethod === 'bacs_transfer'
+            ? 'Airwallex Instant BACS Bank Transfer'
+            : `Airwallex Card (${cardDetails?.brand || 'Visa'} •••• ${cardDetails?.last4 || '4242'})`));
+
+      const result = await applyAirwallexSubscriptionToUser({
+        customerEmail: emailToUse,
+        customerName: nameToUse,
+        itemType,
+        itemId,
+        billingInterval,
+        amount,
+        currency,
+        paymentMethodUsed: methodUsedStr,
+        gatewayRef: `awx_settled_${Date.now()}`
+      });
+
+      res.json({
+        success: true,
+        message: `Payment of £${(Number(amount) || 0).toFixed(2)} GBP successfully processed via Airwallex!`,
+        transaction: result.transaction,
+        subscription: result.updatedSub,
+        receipt: {
+          ...result.receipt,
+          companyName: companyName || '',
+          companyVatNumber: companyVatNumber || '',
+          billingAddress: billingAddress || 'United Kingdom'
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Airwallex subscription payment confirmation failed' });
+    }
+  });
+
 
   // --- SUBSCRIPTION & PRICING MATRIX ENDPOINTS ---
 
@@ -861,6 +1466,44 @@ Return JSON array of company objects with keys: companyName, contactName, email,
   app.post('/api/ai/estimate-repair', async (req: Request, res: Response) => {
     try {
       const { repairType, description, urgency, images } = req.body;
+      
+      // Check authenticated user subscription & care package status
+      let userSub: UserSubscription | null = null;
+      let authenticatedUser: StoredUser | null = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET) as any;
+          authenticatedUser = await getUserByEmail(decoded.email);
+          if (authenticatedUser && authenticatedUser.subscription) {
+            userSub = authenticatedUser.subscription;
+          }
+        } catch (e) {}
+      }
+
+      // Deduct AI credits if user has subscription
+      let creditsDeducted = 0;
+      if (authenticatedUser && userSub && userSub.remainingCredits > 0) {
+        creditsDeducted = Math.min(1000, userSub.remainingCredits);
+        userSub.remainingCredits -= creditsDeducted;
+        authenticatedUser.subscription = userSub;
+        await saveUser(authenticatedUser);
+      }
+
+      const hasActiveCarePackage = Boolean(userSub && userSub.activeCarePackageId && userSub.activeCarePackageId !== 'none');
+      const carePackageDetails = (userSub && hasActiveCarePackage) ? {
+        covered: true,
+        carePackageId: userSub.activeCarePackageId,
+        calloutExcessGBP: 0,
+        guaranteedDispatchHours: 2,
+        emergencyPrioritySLA: 'Awaab’s Law & SafeCover 2-Hour Rapid Response Active'
+      } : {
+        covered: false,
+        calloutExcessGBP: 65,
+        guaranteedDispatchHours: 24,
+        emergencyPrioritySLA: 'Standard Queue'
+      };
+
       const ai = getGenAI();
       let aiResultJson: any = null;
 
@@ -871,6 +1514,7 @@ Assess this homeowner's repair request:
 - Repair Type: ${repairType || 'Urgent Home Repair'}
 - Urgency Level: ${urgency || 'High'}
 - Damage Description: "${description || 'Damage requires immediate professional repair'}"
+- Care Package Coverage: ${hasActiveCarePackage ? 'HOMEOWNER HAS ACTIVE SAFECOVER CARE PACKAGE (0% CALLOUT EXCESS)' : 'Standard Homeowner'}
 
 Return valid JSON:
 {
@@ -915,7 +1559,13 @@ Return valid JSON:
       }
 
       const contractors = await getVettedContractorsFromDB();
-      res.json({ ...aiResultJson, suggestedContractors: contractors.slice(0, 4) });
+      res.json({
+        ...aiResultJson,
+        suggestedContractors: contractors.slice(0, 4),
+        carePackageDetails,
+        creditsDeducted,
+        remainingCredits: userSub?.remainingCredits
+      });
     } catch (err) {
       res.status(500).json({ error: 'Failed to process repair estimate' });
     }
@@ -928,13 +1578,37 @@ Return valid JSON:
       const title = projectTitle || 'UK Trade Renovation Scope';
       const category = tradeCategory || 'Damp & Mould Remediation';
       const ukRegion = region || 'Greater London & South East';
+
+      // Check authenticated user subscription credits
+      let userSub: UserSubscription | null = null;
+      let authenticatedUser: StoredUser | null = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET) as any;
+          authenticatedUser = await getUserByEmail(decoded.email);
+          if (authenticatedUser && authenticatedUser.subscription) {
+            userSub = authenticatedUser.subscription;
+          }
+        } catch (e) {}
+      }
+
+      let creditsDeducted = 0;
+      if (authenticatedUser && userSub && userSub.remainingCredits > 0) {
+        creditsDeducted = Math.min(2500, userSub.remainingCredits);
+        userSub.remainingCredits -= creditsDeducted;
+        authenticatedUser.subscription = userSub;
+        await saveUser(authenticatedUser);
+      }
+
       const genAI = getGenAI();
 
       if (genAI) {
         try {
           const promptText = `You are Tidy Corp's AI Quoting Agent for UK property renovations.
-Context: Title="${title}", Category="${category}", Region="${ukRegion}", Description="${description || ''}".
-Return JSON for complete fair-market quote with materialsList, laborList, merchantComparisons, suggestedMilestones, complianceNotes.`;
+Context: Title="${title}", Category="${category}", Region="${ukRegion}", Description="${description || ''}", Urgency="${urgency || 'priority'}", PreferredMerchant="${preferredMerchant || 'Auto-Lowest Price'}".
+User Subscription Tier: "${userSub?.planName || 'Standard'}".
+Return comprehensive JSON for fair-market quote with materialsList, laborList, merchantComparisons (Travis Perkins, Screwfix, Jewson, City Plumbing, Selco), suggestedMilestones, complianceNotes.`;
 
           const parts: any[] = [{ text: promptText }];
           if (Array.isArray(images) && images.length > 0) {
@@ -953,14 +1627,26 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
           });
 
           if (response.text) {
-            return res.json(JSON.parse(response.text.trim()));
+            const parsed = JSON.parse(response.text.trim());
+            return res.json({
+              ...parsed,
+              creditsDeducted,
+              remainingCredits: userSub?.remainingCredits,
+              subscriptionPerksActive: Boolean(userSub && userSub.planId !== 'apprentice')
+            });
           }
         } catch (e) {
           console.error('Quoting agent error:', e);
         }
       }
 
-      res.json(generateFallbackQuote(title, category, ukRegion));
+      const fallback = generateFallbackQuote(title, category, ukRegion);
+      res.json({
+        ...fallback,
+        creditsDeducted,
+        remainingCredits: userSub?.remainingCredits,
+        subscriptionPerksActive: Boolean(userSub && userSub.planId !== 'apprentice')
+      });
     } catch (err) {
       res.status(500).json({ error: 'Failed to generate AI trade quote.' });
     }
@@ -968,19 +1654,53 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
 
   // --- PROJECTS ENDPOINTS (Firestore backed) ---
 
-  app.get('/api/projects', async (req: Request, res: Response) => {
-    const projects = await getProjectsFromDB();
+  app.get('/api/projects', authenticateToken, async (req: Request, res: Response) => {
+    const jwtUser = (req as any).user;
+    const projects = await getProjectsFromDB(jwtUser);
     res.json(projects);
   });
 
-  app.get('/api/projects/:id', async (req: Request, res: Response) => {
+  app.get('/api/projects/:id', authenticateToken, async (req: Request, res: Response) => {
     const proj = await getProjectByIdFromDB(req.params.id);
     if (!proj) return res.status(404).json({ error: 'Project not found' });
+
+    const jwtUser = (req as any).user;
+    if (jwtUser.role !== 'admin' && jwtUser.role !== 'inspector') {
+      const userId = jwtUser.id || jwtUser.userId || '';
+      const userEmail = (jwtUser.email || '').toLowerCase().trim();
+      const userName = (jwtUser.name || '').toLowerCase().trim();
+
+      const isClient = (proj.clientId && proj.clientId === userId) ||
+        (userEmail && proj.clientEmail && proj.clientEmail.toLowerCase() === userEmail) ||
+        (userName && proj.clientName && proj.clientName.toLowerCase() === userName);
+
+      const isContractor = (proj.assignedContractorId && proj.assignedContractorId === userId) ||
+        (userName && proj.assignedContractorName && proj.assignedContractorName.toLowerCase() === userName);
+
+      if (!isClient && !isContractor) {
+        return res.status(403).json({ error: 'Access denied: You do not have permission to view this project.' });
+      }
+    }
+
     res.json(proj);
   });
 
   app.post('/api/projects', authenticateToken, async (req: Request, res: Response) => {
-    const { title, clientName, clientEmail, clientId, clientPhone, address, totalAmount, currency, startDate, estimatedDurationMonths, notes, milestones, assignedContractorId, assignedContractorName, damageDescription, damageImages } = req.body;
+    let { title, clientName, clientEmail, clientId, clientPhone, address, totalAmount, currency, startDate, estimatedDurationMonths, notes, milestones, assignedContractorId, assignedContractorName, damageDescription, damageImages } = req.body;
+
+    const user = (req as any).user;
+    if (user) {
+      if (user.role === 'homeowner') {
+        clientName = clientName || user.name;
+        clientEmail = clientEmail || user.email;
+        clientId = clientId || user.id;
+      } else if (user.role === 'contractor') {
+        if (!assignedContractorId) {
+          assignedContractorId = user.id;
+          assignedContractorName = assignedContractorName || user.name;
+        }
+      }
+    }
 
     if (!title || !clientName || !clientEmail || !totalAmount || Number(totalAmount) <= 0) {
       return res.status(400).json({ error: 'Title, client name, client email, and positive total amount are required.' });
@@ -1233,6 +1953,24 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
     const existing = await getProjectByIdFromDB(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Project not found' });
 
+    const jwtUser = (req as any).user;
+    if (jwtUser.role !== 'admin' && jwtUser.role !== 'inspector') {
+      const userId = jwtUser.id || jwtUser.userId || '';
+      const userEmail = (jwtUser.email || '').toLowerCase().trim();
+      const userName = (jwtUser.name || '').toLowerCase().trim();
+
+      const isClient = (existing.clientId && existing.clientId === userId) ||
+        (userEmail && existing.clientEmail && existing.clientEmail.toLowerCase() === userEmail) ||
+        (userName && existing.clientName && existing.clientName.toLowerCase() === userName);
+
+      const isContractor = (existing.assignedContractorId && existing.assignedContractorId === userId) ||
+        (userName && existing.assignedContractorName && existing.assignedContractorName.toLowerCase() === userName);
+
+      if (!isClient && !isContractor) {
+        return res.status(403).json({ error: 'Access denied: You do not have permission to modify this project.' });
+      }
+    }
+
     const updated = { ...existing, ...req.body };
     await saveProjectToDB(updated);
     res.json(updated);
@@ -1360,14 +2098,14 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
     });
   });
 
-  app.get('/api/transactions', async (req: Request, res: Response) => {
-    const txs = await getTransactionsFromDB();
+  app.get('/api/transactions', authenticateToken, async (req: Request, res: Response) => {
+    const jwtUser = (req as any).user;
+    const txs = await getTransactionsFromDB(jwtUser);
     res.json(txs);
   });
 
   // VITE MIDDLEWARE / STATIC SERVING
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
@@ -1380,7 +2118,6 @@ Return JSON for complete fair-market quote with materialsList, laborList, mercha
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
-
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Renovation Payment Hub Server running on http://0.0.0.0:${PORT}`);

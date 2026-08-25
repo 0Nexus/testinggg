@@ -38,12 +38,16 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   onOpenPortalForMilestone,
   onUpdateProject
 }) => {
-  if (!project) return null;
-
   // Local state for schedule mode selection: 'standard' vs 'long_term'
   const [scheduleMode, setScheduleMode] = useState<'standard' | 'long_term'>(
-    project.scheduleType || 'standard'
+    project?.scheduleType || 'standard'
   );
+
+  useEffect(() => {
+    if (project?.scheduleType) {
+      setScheduleMode(project.scheduleType);
+    }
+  }, [project?.scheduleType]);
 
   // Toast feedback message when toggling reminders or changing settings
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -56,6 +60,14 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   const [extraMediaType, setExtraMediaType] = useState<'image' | 'video'>('image');
   const [isSubmittingExtra, setIsSubmittingExtra] = useState(false);
 
+  // Dispute Modal state & handlers
+  const [showDisputeModal, setShowDisputeModal] = useState(false);
+  const [disputingMilestoneId, setDisputingMilestoneId] = useState<string | null>(null);
+  const [disputeReason, setDisputeReason] = useState('Substandard Work Quality / Incomplete Work');
+  const [disputeDescription, setDisputeDescription] = useState('');
+  const [disputeImageUrl, setDisputeImageUrl] = useState('');
+  const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
+
   const getAuthHeaders = () => {
     const token = localStorage.getItem('tidy_secure_token');
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -64,6 +76,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   };
 
   const handleContractorResponse = async (status: 'accepted' | 'declined') => {
+    if (!project) return;
     try {
       const res = await fetch(`/api/projects/${project.id}/contractor-status`, {
         method: 'PATCH',
@@ -83,7 +96,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
 
   const handleCreateExtraPay = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!extraReason.trim() || !extraAmount) return;
+    if (!project || !extraReason.trim() || !extraAmount) return;
 
     setIsSubmittingExtra(true);
     try {
@@ -120,6 +133,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   };
 
   const handleReviewExtraPay = async (extraId: string, status: 'approved' | 'rejected') => {
+    if (!project) return;
     try {
       const res = await fetch(`/api/projects/${project.id}/extra-pay/${extraId}`, {
         method: 'PATCH',
@@ -137,15 +151,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
     }
   };
 
-  // Dispute Modal state & handlers
-  const [showDisputeModal, setShowDisputeModal] = useState(false);
-  const [disputingMilestoneId, setDisputingMilestoneId] = useState<string | null>(null);
-  const [disputeReason, setDisputeReason] = useState('Substandard Work Quality / Incomplete Work');
-  const [disputeDescription, setDisputeDescription] = useState('');
-  const [disputeImageUrl, setDisputeImageUrl] = useState('');
-  const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
-
   const handleCompleteMilestone = async (milestoneId: string) => {
+    if (!project) return;
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${milestoneId}/complete`, {
         method: 'POST',
@@ -163,6 +170,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   };
 
   const handleReleaseEscrow = async (milestoneId: string) => {
+    if (!project) return;
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${milestoneId}/release`, {
         method: 'POST',
@@ -186,7 +194,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
 
   const handleSubmitDispute = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!disputingMilestoneId || !disputeDescription.trim()) return;
+    if (!project || !disputingMilestoneId || !disputeDescription.trim()) return;
 
     setIsSubmittingDispute(true);
     try {
@@ -217,6 +225,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
   };
 
   const handleAdminResolveDispute = async (milestoneId: string, adminDecision: 'contractor_revisit' | 'release_funds' | 'refund_client', adminNotes: string) => {
+    if (!project) return;
     try {
       const res = await fetch(`/api/projects/${project.id}/milestones/${milestoneId}/admin-resolve`, {
         method: 'POST',
@@ -292,6 +301,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
 
     return result;
   };
+
+  if (!project) return null;
 
   // Determine active milestones based on toggle schedule mode
   const displayedMilestones =

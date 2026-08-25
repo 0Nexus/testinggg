@@ -1,6 +1,6 @@
 {
   "name": "TidyCorp",
-  "description": "Tidy Corp AI Secure: Comprehensive UK home renovation escrow management, Dream Wall design visualizer, Awaab's Law hazard compliance, and MCP multi-gateway payment routing (Stripe & Airwallex)",
+  "description": "Tidy Corp AI Secure: FCA-compliant UK renovation escrow platform with multi-slide human realism carousel, Airwallex recurring subscriptions & BACS Direct Debit checkout, live credit deduction, Awaab's Law compliance, and UK GDPR/PECR cookie collection.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

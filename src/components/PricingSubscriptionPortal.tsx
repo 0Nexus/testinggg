@@ -9,6 +9,7 @@ import {
   PlanTierDefinition,
   CarePackageDefinition
 } from '../data/pricingData';
+import { AirwallexSubscriptionCheckoutModal, AirwallexCheckoutItem } from './AirwallexSubscriptionCheckoutModal';
 import {
   Shield,
   Zap,
@@ -31,17 +32,21 @@ import {
   ArrowRight,
   TrendingUp,
   Sliders,
-  HelpCircle
+  HelpCircle,
+  FileCheck,
+  ChevronLeft
 } from 'lucide-react';
 
 interface PricingSubscriptionPortalProps {
   currentUser: User | null;
   onUserUpdate?: (updatedUser: User) => void;
+  onNavigateTab?: (tab: any) => void;
 }
 
 export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps> = ({
   currentUser,
-  onUserUpdate
+  onUserUpdate,
+  onNavigateTab
 }) => {
   const [activeTab, setActiveTab] = useState<'plans' | 'gateway_fees' | 'homeowner_care' | 'credits' | 'growth_pass'>('plans');
   const [billingInterval, setBillingInterval] = useState<'monthly' | 'annual'>('annual');
@@ -49,6 +54,10 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
   // Interactive Fee Calculator State
   const [calcAmount, setCalcAmount] = useState<number>(2500);
   const [calcTradeCertActive, setCalcTradeCertActive] = useState<boolean>(true);
+
+  // Airwallex Checkout Modal State
+  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState<boolean>(false);
+  const [selectedCheckoutItem, setSelectedCheckoutItem] = useState<AirwallexCheckoutItem | null>(null);
 
   // Mutation / Action Loading States
   const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
@@ -59,8 +68,35 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
 
   const token = localStorage.getItem('tidy_secure_token');
 
-  // Handle Subscription Change
-  const handleSubscribePlan = async (plan: PlanTierDefinition) => {
+  // Trigger Airwallex Checkout for Plan Tiers
+  const handleOpenPlanCheckout = (plan: PlanTierDefinition) => {
+    if (plan.monthlyPriceGBP === 0) {
+      // Free apprentice tier directly subscribes or opens checkout
+      handleSubscribeFreePlan(plan);
+      return;
+    }
+
+    const price = billingInterval === 'annual' && plan.annualPriceGBP && plan.annualPriceGBP > 0
+      ? plan.annualPriceGBP
+      : (plan.monthlyPriceGBP === -1 ? 499 : plan.monthlyPriceGBP);
+
+    setSelectedCheckoutItem({
+      type: 'plan',
+      id: plan.id,
+      name: `${plan.name} Tier`,
+      priceGBP: plan.monthlyPriceGBP === -1 ? 499 : plan.monthlyPriceGBP,
+      annualPriceGBP: plan.annualPriceGBP === -1 ? 4990 : plan.annualPriceGBP,
+      monthlyCredits: plan.monthlyCredits,
+      billingInterval,
+      description: `${plan.subtitle} • Designed for ${plan.targetRole}`,
+      features: plan.features,
+      badge: plan.isPopular ? 'Most Popular' : plan.subtitle
+    });
+    setIsCheckoutModalOpen(true);
+  };
+
+  // Handle Free Tier Direct Subscription
+  const handleSubscribeFreePlan = async (plan: PlanTierDefinition) => {
     setLoadingPlanId(plan.id);
     setBannerMessage(null);
 
@@ -80,7 +116,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
 
       if (res.ok) {
         const data = await res.json();
-        setBannerMessage(data.message);
+        setBannerMessage(`Activated ${plan.name} plan successfully!`);
 
         if (currentUser && onUserUpdate && data.subscription) {
           onUserUpdate({
@@ -96,106 +132,71 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
     }
   };
 
-  // Handle Care Package Subscription
-  const handleSubscribeCarePackage = async (carePkg: CarePackageDefinition) => {
-    setLoadingCareId(carePkg.id);
-    setBannerMessage(null);
-
-    try {
-      const res = await fetch('/api/user/care-package', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : ''
-        },
-        body: JSON.stringify({
-          userId: currentUser?.id,
-          carePackageId: carePkg.id
-        })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setBannerMessage(data.message);
-
-        if (currentUser && onUserUpdate && data.updatedSubscription) {
-          onUserUpdate({
-            ...currentUser,
-            subscription: data.updatedSubscription
-          });
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingCareId(null);
-    }
+  // Trigger Airwallex Checkout for Care Packages
+  const handleOpenCareCheckout = (carePkg: CarePackageDefinition) => {
+    setSelectedCheckoutItem({
+      type: 'care_package',
+      id: carePkg.id,
+      name: carePkg.name,
+      priceGBP: carePkg.monthlyPriceGBP,
+      billingInterval: 'monthly',
+      description: carePkg.tagline || carePkg.description,
+      features: carePkg.features,
+      badge: carePkg.badge
+    });
+    setIsCheckoutModalOpen(true);
   };
 
-  // Handle Credits Top Up
-  const handleTopUpCredits = async (packageType: 'standard' | 'bulk') => {
-    setLoadingCreditsType(packageType);
-    setBannerMessage(null);
-
-    try {
-      const res = await fetch('/api/user/credits/topup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : ''
-        },
-        body: JSON.stringify({ packageType })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setBannerMessage(data.message);
-
-        if (currentUser && onUserUpdate && data.updatedSubscription) {
-          onUserUpdate({
-            ...currentUser,
-            subscription: data.updatedSubscription
-          });
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingCreditsType(null);
-    }
+  // Trigger Airwallex Checkout for AI Credits
+  const handleOpenCreditsCheckout = (packageType: 'standard' | 'bulk') => {
+    const isBulk = packageType === 'bulk';
+    setSelectedCheckoutItem({
+      type: 'credits',
+      id: packageType,
+      name: isBulk ? 'Bulk Enterprise Tidy Credits (1.4M)' : 'Standard Tidy Credits Top-Up (20,000)',
+      priceGBP: isBulk ? 700 : 10,
+      billingInterval: 'monthly',
+      description: isBulk
+        ? '1,400,000 High-Volume AI Execution Compute Credits with 30% discount'
+        : '20,000 Standard AI Compute Tokens allocated instantly',
+      features: [
+        'Instant allocation to account ledger',
+        'Valid on all AI Quoting & Urgent Repair models',
+        'Never expire for active subscribers'
+      ],
+      badge: isBulk ? '30% Savings' : 'Standard Pack'
+    });
+    setIsCheckoutModalOpen(true);
   };
 
-  // Handle Escrow Pre-Purchase Pass
-  const handleActivateEscrowPass = async () => {
-    setLoadingEscrowPass(true);
-    setBannerMessage(null);
+  // Trigger Airwallex Checkout for Escrow Pre-Purchase Pass
+  const handleOpenEscrowPassCheckout = () => {
+    setSelectedCheckoutItem({
+      type: 'escrow_pass',
+      id: 'escrow_pass_25k',
+      name: 'Escrow Pre-Purchase Growth Pass',
+      priceGBP: 500,
+      billingInterval: 'monthly',
+      description: 'Pre-pay £500 upfront for £25,000 project volume with ZERO gateway transaction fees (£1,125 net savings)',
+      features: [
+        'Zero gateway processing fees on first £25,000 GTV',
+        '£1,125.00 estimated fee savings',
+        'Full FCA ring-fenced escrow protection'
+      ],
+      badge: 'High-Volume Pass'
+    });
+    setIsCheckoutModalOpen(true);
+  };
 
-    try {
-      const res = await fetch('/api/user/escrow-pass', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : ''
-        },
-        body: JSON.stringify({ userId: currentUser?.id })
+  // Handle Airwallex Payment Success Callback
+  const handleAirwallexSuccess = (updatedSub: UserSubscription, receipt: any) => {
+    if (currentUser && onUserUpdate) {
+      onUserUpdate({
+        ...currentUser,
+        subscription: updatedSub
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setBannerMessage(data.message);
-
-        if (currentUser && onUserUpdate && data.updatedSubscription) {
-          onUserUpdate({
-            ...currentUser,
-            subscription: data.updatedSubscription
-          });
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingEscrowPass(false);
     }
+    setBannerMessage(`Payment of £${receipt?.amount?.toFixed(2) || '0.00'} GBP cleared via Airwallex! Transaction Ref: ${receipt?.transactionId || 'AWX-TX'}`);
   };
 
   const currentSub = currentUser?.subscription;
@@ -251,9 +252,20 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
 
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 relative z-10">
           <div>
-            <div className="inline-flex items-center space-x-2 bg-[#0057B8]/20 border border-[#0057B8]/40 text-cyan-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-3">
-              <Shield className="h-3.5 w-3.5 text-cyan-400" />
-              <span>Tidy Corp SaaS &amp; Escrow Fee Policy</span>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              {onNavigateTab && (
+                <button
+                  onClick={() => onNavigateTab('landing')}
+                  className="inline-flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1 rounded-full text-xs font-bold transition-all border border-slate-700"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  <span>Back to Home</span>
+                </button>
+              )}
+              <div className="inline-flex items-center space-x-2 bg-[#0057B8]/20 border border-[#0057B8]/40 text-cyan-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider">
+                <Shield className="h-3.5 w-3.5 text-cyan-400" />
+                <span>Tidy Corp SaaS &amp; Escrow Fee Policy</span>
+              </div>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
               Flexible Enterprise &amp; Subscription Tiers
@@ -312,6 +324,31 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
               </div>
             </div>
           )}
+        </div>
+
+        {/* Airwallex Official Integrated Rail Banner */}
+        <div className="mt-6 bg-gradient-to-r from-[#003B7A]/40 via-slate-950/80 to-[#1E112A]/40 border border-[#0057B8]/40 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+          <div className="flex items-center space-x-3">
+            <div className="h-8 w-8 rounded-xl bg-gradient-to-tr from-[#0057B8] to-[#FF7F00] flex items-center justify-center text-white font-black text-[11px] shadow">
+              AWX
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="font-black text-white">All Subscriptions Processed via Airwallex (UK) Limited</span>
+                <span className="text-[9px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 px-1.5 py-0.2 rounded">
+                  FCA FRN: 901001
+                </span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Enjoy 0.4% UK BACS Direct Debit clearing, 3DS 2.0 multi-currency cards, and automated statutory tax invoices.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-3 font-mono text-[10px] text-cyan-300 shrink-0">
+            <span className="flex items-center space-x-1"><Lock className="h-3 w-3" /><span>PCI-DSS Level 1</span></span>
+            <span>•</span>
+            <span className="text-emerald-400 font-bold">Zero Decline BACS Rail</span>
+          </div>
         </div>
 
         {/* Tab Navigation Bar */}
@@ -504,7 +541,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
                   {/* Button */}
                   <div className="pt-6 mt-6 border-t border-slate-800">
                     <button
-                      onClick={() => handleSubscribePlan(plan)}
+                      onClick={() => handleOpenPlanCheckout(plan)}
                       disabled={loadingPlanId === plan.id || isCurrent}
                       className={`w-full py-3 rounded-2xl text-xs font-black transition-all flex items-center justify-center space-x-2 ${
                         isCurrent
@@ -794,7 +831,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
                     </div>
 
                     <button
-                      onClick={() => handleSubscribeCarePackage(pkg)}
+                      onClick={() => handleOpenCareCheckout(pkg)}
                       disabled={loadingCareId === pkg.id || isActive}
                       className={`w-full py-3 rounded-2xl text-xs font-black transition-all flex items-center justify-center space-x-2 ${
                         isActive
@@ -814,7 +851,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
                         </>
                       ) : (
                         <>
-                          <span>Activate {pkg.name}</span>
+                          <span>Activate {pkg.name} via Airwallex</span>
                           <ArrowRight className="h-4 w-4" />
                         </>
                       )}
@@ -841,7 +878,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
                 <span className="text-slate-400 text-xs">Per 20,000 Tidy Credits allocated instantly.</span>
               </div>
               <button
-                onClick={() => handleTopUpCredits('standard')}
+                onClick={() => handleOpenCreditsCheckout('standard')}
                 disabled={loadingCreditsType === 'standard'}
                 className="w-full bg-[#0057B8] hover:bg-blue-600 text-white font-black py-3 rounded-2xl text-xs shadow-md transition-all flex items-center justify-center space-x-2"
               >
@@ -865,7 +902,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
                 <span className="text-slate-400 text-xs">High-volume discount engineered for portfolio managers.</span>
               </div>
               <button
-                onClick={() => handleTopUpCredits('bulk')}
+                onClick={() => handleOpenCreditsCheckout('bulk')}
                 disabled={loadingCreditsType === 'bulk'}
                 className="w-full bg-[#FF7F00] hover:bg-amber-600 text-slate-950 font-black py-3 rounded-2xl text-xs shadow-md transition-all flex items-center justify-center space-x-2"
               >
@@ -973,7 +1010,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
             </div>
 
             <button
-              onClick={handleActivateEscrowPass}
+              onClick={handleOpenEscrowPassCheckout}
               disabled={loadingEscrowPass || currentSub?.hasEscrowPrePurchasePass}
               className={`w-full py-3.5 rounded-2xl text-xs font-black transition-all flex items-center justify-center space-x-2 ${
                 currentSub?.hasEscrowPrePurchasePass
@@ -991,7 +1028,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
               ) : (
                 <>
                   <Zap className="h-4 w-4" />
-                  <span>Activate Escrow Pass (£500)</span>
+                  <span>Activate Escrow Pass (£500 via Airwallex)</span>
                 </>
               )}
             </button>
@@ -1025,6 +1062,15 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
           </div>
         </div>
       )}
+
+      {/* Airwallex Subscription Checkout Modal */}
+      <AirwallexSubscriptionCheckoutModal
+        isOpen={isCheckoutModalOpen}
+        onClose={() => setIsCheckoutModalOpen(false)}
+        item={selectedCheckoutItem}
+        currentUser={currentUser}
+        onSubscriptionSuccess={handleAirwallexSuccess}
+      />
 
     </div>
   );

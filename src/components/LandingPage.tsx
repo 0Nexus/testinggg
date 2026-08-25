@@ -62,6 +62,7 @@ interface LandingPageProps {
   onOpenAuthModal?: () => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  onOpenCookieSettings?: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
@@ -69,7 +70,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onNavigateTab,
   onOpenAuthModal,
   theme = 'light',
-  onToggleTheme
+  onToggleTheme,
+  onOpenCookieSettings
 }) => {
   const [sdkCopied, setSdkCopied] = useState(false);
 
@@ -1087,8 +1089,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
         {/* FOOTER */}
         <footer className="border-t border-slate-800/80 pt-8 pb-12 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 font-mono gap-4">
-          <div>
+          <div className="flex flex-wrap items-center gap-3">
             <span>© 2026 Tidy Corporation Ltd • Company Registration: 16530001</span>
+            {onOpenCookieSettings && (
+              <button
+                onClick={onOpenCookieSettings}
+                className="text-cyan-400 hover:text-cyan-300 underline underline-offset-4 transition-colors"
+              >
+                Cookie &amp; Privacy Preferences
+              </button>
+            )}
           </div>
           <div className="flex items-center space-x-6">
             <a href="mailto:enquiries@tidycorp.co.uk" className="hover:text-cyan-400 transition-colors">enquiries@tidycorp.co.uk</a>
