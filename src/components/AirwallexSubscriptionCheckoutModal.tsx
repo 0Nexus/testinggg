@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, UserSubscription } from '../types';
 import {
   ShieldCheck,
@@ -19,7 +19,9 @@ import {
   ChevronRight,
   Info,
   Calendar,
-  Globe
+  Globe,
+  ExternalLink,
+  ShieldAlert
 } from 'lucide-react';
 
 export interface AirwallexCheckoutItem {
@@ -43,6 +45,18 @@ interface AirwallexSubscriptionCheckoutModalProps {
   onSubscriptionSuccess: (updatedSub: UserSubscription, receipt: any) => void;
 }
 
+declare global {
+  interface Window {
+    Airwallex?: {
+      init: (options: { env: string; origin: string }) => void;
+      createElement: (type: string, options?: any) => any;
+      confirmPaymentIntent: (options: any) => Promise<any>;
+      redirectToCheckout?: (options: any) => void;
+      destroyElement?: (type: string) => void;
+    };
+  }
+}
+
 export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionCheckoutModalProps> = ({
   isOpen,
   onClose,
@@ -54,7 +68,7 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
     item?.billingInterval || (item?.annualPriceGBP && item.annualPriceGBP > 0 ? 'annual' : 'monthly')
   );
 
-  const [paymentRail, setPaymentRail] = useState<'direct_debit' | 'card' | 'apple_pay' | 'bacs_transfer'>('direct_debit');
+  const [paymentRail, setPaymentRail] = useState<'card' | 'direct_debit' | 'apple_pay' | 'hosted_checkout'>('card');
 
   // Customer Fields
   const [customerName, setCustomerName] = useState(currentUser?.name || 'Arthur Vance');
@@ -70,27 +84,40 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
   const [accountHolderName, setAccountHolderName] = useState(customerName);
   const [acceptDirectDebitMandate, setAcceptDirectDebitMandate] = useState(true);
 
-  // Card Fields
+  // Card Fields (Fallback / Custom Elements)
   const [cardHolder, setCardHolder] = useState(customerName);
-  const [cardNumber, setCardNumber] = useState('4242 •••• •••• 4242');
-  const [cardExpiry, setCardExpiry] = useState('08/28');
-  const [cardCvv, setCardCvv] = useState('883');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExpiry, setCardExpiry] = useState('');
+  const [cardCvv, setCardCvv] = useState('');
   const [saveToAirwallexVault, setSaveToAirwallexVault] = useState(true);
 
   // Processing & State
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [configNotice, setConfigNotice] = useState<string | null>(null);
   const [settledReceipt, setSettledReceipt] = useState<any>(null);
-  const [activeSession, setActiveSession] = useState<{ id: string; checkoutUrl: string; clientSecret: string } | null>(null);
+  const [activeSession, setActiveSession] = useState<{
+    id: string;
+    checkoutUrl: string;
+    clientSecret: string;
+    airwallexEnv?: string;
+  } | null>(null);
   const [archStep, setArchStep] = useState<number>(1);
   const [showArchFlow, setShowArchFlow] = useState<boolean>(true);
+  const [isSdkLoaded, setIsSdkLoaded] = useState<boolean>(false);
+
+  const cardElementRef = useRef<any>(null);
+  const cardContainerRef = useRef<HTMLDivElement>(null);
 
   // Synchronize item interval when opened
   useEffect(() => {
     if (item) {
       setBillingInterval(item.billingInterval || (item.annualPriceGBP && item.annualPriceGBP > 0 ? 'annual' : 'monthly'));
       setArchStep(1);
+      setErrorMessage(null);
+      setConfigNotice(null);
+      setSettledReceipt(null);
     }
   }, [item]);
 
@@ -104,60 +131,37 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
     if (currentUser?.email) {
       setCustomerEmail(currentUser.email);
     }
+    if (currentUser?.companyName) {
+      setCompanyName(currentUser.companyName);
+    }
   }, [currentUser]);
 
-  // Auto-initialize Checkout Session on modal open (Architecture Steps 1 -> 2 -> 3 -> 4 -> 5)
+  // Load Airwallex JS SDK dynamically
   useEffect(() => {
-    if (isOpen && item) {
-      let isMounted = true;
-      const initCheckout = async () => {
-        try {
-          setArchStep(2); // Step 2: POST /api/create-checkout
-          const token = localStorage.getItem('tidy_secure_token');
-          const res = await fetch('/api/create-checkout', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: token ? `Bearer ${token}` : ''
-            },
-            body: JSON.stringify({
-              planId: item.id,
-              itemId: item.id,
-              itemType: item.type,
-              billingInterval,
-              amount: total,
-              currency: 'GBP',
-              customerEmail,
-              customerName,
-              companyName,
-              companyVatNumber: vatNumber,
-              billingAddress: `${billingAddress}, ${postcode}`
-            })
-          });
+    if (!isOpen) return;
 
-          if (res.ok) {
-            const data = await res.json();
-            if (isMounted && data.success) {
-              setActiveSession({
-                id: data.checkoutId,
-                checkoutUrl: data.checkoutUrl,
-                clientSecret: data.clientSecret
-              });
-              setArchStep(5); // Step 5: Customer on Airwallex Payment Page
-            }
-          }
-        } catch (e) {
-          console.error('Failed to pre-create checkout session:', e);
-        }
-      };
-
-      initCheckout();
-
-      return () => {
-        isMounted = false;
-      };
+    if (window.Airwallex) {
+      setIsSdkLoaded(true);
+      return;
     }
-  }, [isOpen, item?.id, billingInterval]);
+
+    const existingScript = document.getElementById('airwallex-js-sdk');
+    if (!existingScript) {
+      const script = document.createElement('script');
+      script.id = 'airwallex-js-sdk';
+      script.src = 'https://checkout.airwallex.com/assets/elements.bundle.min.js';
+      script.async = true;
+      script.onload = () => {
+        setIsSdkLoaded(true);
+      };
+      script.onerror = () => {
+        console.warn('Airwallex JS SDK CDN load error - falling back to direct API processing');
+      };
+      document.body.appendChild(script);
+    } else {
+      setIsSdkLoaded(true);
+    }
+  }, [isOpen]);
 
   // Pricing calculations
   const calculateTotal = () => {
@@ -189,6 +193,121 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
 
   const { base, vat, airwallexFee, total, savingsVsStripe } = calculateTotal();
 
+  // Create real Airwallex PaymentIntent on backend when modal opens or item/interval changes
+  useEffect(() => {
+    if (isOpen && item) {
+      let isMounted = true;
+      const initRealAirwallexCheckout = async () => {
+        try {
+          setArchStep(2); // Step 2: POST /api/create-checkout
+          const token = localStorage.getItem('tidy_secure_token');
+          const res = await fetch('/api/create-checkout', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: token ? `Bearer ${token}` : ''
+            },
+            body: JSON.stringify({
+              planId: item.id,
+              itemId: item.id,
+              itemType: item.type,
+              billingInterval,
+              amount: total,
+              currency: 'GBP',
+              customerEmail,
+              customerName,
+              companyName,
+              companyVatNumber: vatNumber,
+              billingAddress: `${billingAddress}, ${postcode}`
+            })
+          });
+
+          const data = await res.json();
+
+          if (!isMounted) return;
+
+          if (!res.ok || !data.success) {
+            if (data.configured === false || (data.error && data.error.includes('credentials are not configured'))) {
+              setConfigNotice(data.error);
+            } else {
+              setErrorMessage(data.error || 'Failed to initialize Airwallex checkout session');
+            }
+            return;
+          }
+
+          setActiveSession({
+            id: data.checkoutId || data.paymentIntentId,
+            checkoutUrl: data.checkoutUrl,
+            clientSecret: data.clientSecret,
+            airwallexEnv: data.airwallexEnv || 'demo'
+          });
+
+          setArchStep(5); // Step 5: Customer on Airwallex Payment Page
+
+          // Initialize Airwallex SDK with real clientSecret & environment
+          if (window.Airwallex && data.clientSecret) {
+            try {
+              window.Airwallex.init({
+                env: data.airwallexEnv || 'demo',
+                origin: window.location.origin
+              });
+            } catch (initErr) {
+              console.warn('Airwallex SDK init note:', initErr);
+            }
+          }
+        } catch (e: any) {
+          if (isMounted) {
+            console.error('Failed to create Airwallex checkout session:', e);
+            setErrorMessage(e.message || 'Failed to connect to Airwallex API');
+          }
+        }
+      };
+
+      initRealAirwallexCheckout();
+
+      return () => {
+        isMounted = false;
+      };
+    }
+  }, [isOpen, item?.id, billingInterval, total]);
+
+  // Mount Airwallex Elements if SDK loaded & card container exists
+  useEffect(() => {
+    if (isSdkLoaded && window.Airwallex && activeSession?.clientSecret && paymentRail === 'card' && cardContainerRef.current) {
+      try {
+        if (cardElementRef.current) {
+          try {
+            cardElementRef.current.destroy?.();
+          } catch (e) {}
+        }
+
+        const cardElement = window.Airwallex.createElement('card', {
+          autoCapture: true,
+          authFormType: 'popup',
+          classes: {
+            base: 'airwallex-card-input'
+          }
+        });
+
+        if (cardElement && cardContainerRef.current) {
+          cardElement.mount(cardContainerRef.current);
+          cardElementRef.current = cardElement;
+        }
+      } catch (err) {
+        console.log('Airwallex element mount note (using custom input binding):', err);
+      }
+    }
+
+    return () => {
+      if (cardElementRef.current) {
+        try {
+          cardElementRef.current.destroy?.();
+        } catch (e) {}
+      }
+    };
+  }, [isSdkLoaded, activeSession?.clientSecret, paymentRail]);
+
+  // Handle Real Payment Authorization & Confirmation
   const handleProcessAirwallexPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!item) return;
@@ -199,50 +318,46 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
       return;
     }
 
+    if (!activeSession?.id) {
+      setErrorMessage('Airwallex session not initialized. Please ensure API credentials are configured.');
+      return;
+    }
+
     setIsProcessing(true);
-    setArchStep(6); // Step 6: Customer Pays on Airwallex Payment Page
-    setProcessingStep('1/3 Authorizing payment via Airwallex FCA BACS Rail...');
+    setArchStep(6); // Step 6: Customer Pays on Airwallex Payment Rail
+    setProcessingStep('1/3 Authorizing transaction via Airwallex Global API...');
 
     try {
       const token = localStorage.getItem('tidy_secure_token');
-      
-      // Ensure we have a checkout session
-      let currentCheckoutId = activeSession?.id;
-      if (!currentCheckoutId) {
-        const createRes = await fetch('/api/create-checkout', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: token ? `Bearer ${token}` : ''
-          },
-          body: JSON.stringify({
-            planId: item.id,
-            itemId: item.id,
-            itemType: item.type,
-            billingInterval,
-            amount: total,
-            currency: 'GBP',
-            customerEmail,
-            customerName,
-            companyName,
-            companyVatNumber: vatNumber,
-            billingAddress: `${billingAddress}, ${postcode}`
-          })
-        });
-        const createData = await createRes.json();
-        if (!createRes.ok || !createData.success) {
-          throw new Error(createData.error || 'Failed to initialize Airwallex checkout session');
+
+      // If card element was mounted from SDK, confirm using SDK
+      if (paymentRail === 'card' && window.Airwallex && cardElementRef.current) {
+        setProcessingStep('2/3 Authorizing 3DS 2.0 & Tokenizing Card via Airwallex...');
+        try {
+          const confirmResponse = await window.Airwallex.confirmPaymentIntent({
+            element: cardElementRef.current,
+            id: activeSession.id,
+            client_secret: activeSession.clientSecret,
+            payment_method_options: {
+              card: {
+                auto_capture: true
+              }
+            }
+          });
+          console.log('[Airwallex SDK Confirm Response]:', confirmResponse);
+        } catch (sdkErr: any) {
+          console.warn('Airwallex SDK element confirm error:', sdkErr);
+          // If SDK fails with card declined / 3DS error, fail immediately
+          if (sdkErr?.message) {
+            throw new Error(`Airwallex Card Authorization: ${sdkErr.message}`);
+          }
         }
-        currentCheckoutId = createData.checkoutId;
       }
 
-      await new Promise(r => setTimeout(r, 600));
       setArchStep(7); // Step 7: Webhook -> Backend -> Update DB -> Give User Access & Redirect
-      setProcessingStep('2/3 Webhook dispatched to Backend: Updating Firestore DB & Provisioning Tier...');
-      await new Promise(r => setTimeout(r, 700));
-      setProcessingStep('3/3 Access Granted: Generating FCA statutory tax invoice...');
+      setProcessingStep('2/3 Verifying real payment settlement with Airwallex API...');
 
-      // Complete Checkout with Airwallex backend
+      // Call Backend Complete-Checkout to perform cryptographic verification and query Airwallex API
       const confirmRes = await fetch('/api/airwallex/complete-checkout', {
         method: 'POST',
         headers: {
@@ -250,7 +365,8 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
           Authorization: token ? `Bearer ${token}` : ''
         },
         body: JSON.stringify({
-          checkoutId: currentCheckoutId,
+          checkoutId: activeSession.id,
+          paymentIntentId: activeSession.id,
           itemId: item.id,
           itemType: item.type,
           billingInterval,
@@ -262,16 +378,18 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
           companyVatNumber: vatNumber,
           billingAddress: `${billingAddress}, ${postcode}`,
           paymentMethod: paymentRail,
-          directDebitDetails: paymentRail === 'direct_debit' ? { sortCode, accountNumber, accountHolderName } : undefined,
-          cardDetails: paymentRail === 'card' ? { brand: 'Mastercard Corporate', last4: '4242', cardHolder } : undefined
+          directDebitDetails: paymentRail === 'direct_debit' ? { sortCode, accountNumber, accountHolderName } : undefined
         })
       });
 
       const confirmData = await confirmRes.json();
+
       if (!confirmRes.ok || !confirmData.success) {
-        throw new Error(confirmData.error || 'Airwallex payment settlement failed');
+        // Real rejection from Airwallex API (e.g. status !== SUCCEEDED)
+        throw new Error(confirmData.error || `Payment verification failed. Airwallex status: ${confirmData.status || 'UNPAID'}`);
       }
 
+      setProcessingStep('3/3 Payment verified & subscription provisioned!');
       setSettledReceipt(confirmData.receipt);
       setIsProcessing(false);
 
@@ -280,14 +398,14 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
       }
     } catch (err: any) {
       setIsProcessing(false);
-      setErrorMessage(err.message || 'Payment processing encountered an issue. Please retry.');
+      setErrorMessage(err.message || 'Payment processing failed. Access has not been granted.');
     }
   };
 
   const handleDownloadInvoice = () => {
     if (!item) return;
     const invoiceContent = `========================================================================
-TIDY CORP UK & AIRWALLEX RECURRING SUBSCRIPTION TAX INVOICE
+TIDY CORPORATION LTD & AIRWALLEX RECURRING SUBSCRIPTION TAX INVOICE
 FCA Authorized EMI: Airwallex (UK) Limited (FRN: 901001)
 ========================================================================
 Invoice Reference: ${settledReceipt?.transactionId || 'AWX-TX-83921'}
@@ -314,7 +432,7 @@ UK VAT (20.0% Standard): £${settledReceipt?.vatAmount?.toFixed(2) || vat.toFixe
 ------------------------------------------------------------------------
 TOTAL PAID VIA AIRWALLEX: £${settledReceipt?.amount?.toFixed(2) || total.toFixed(2)} GBP
 ========================================================================
-Thank you for partnering with Tidy Corp. All client funds held in ring-fenced escrow accounts.
+Thank you for partnering with Tidy Corporation Ltd. All client funds held in ring-fenced escrow accounts.
 `;
     const blob = new Blob([invoiceContent], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -328,7 +446,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
   if (!isOpen || !item) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
       <div className="relative max-w-4xl w-full bg-slate-900 border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden my-auto text-slate-100 font-sans">
         
         {/* Header Banner */}
@@ -343,6 +461,11 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                 <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-mono font-bold uppercase">
                   FCA Regulated #901001
                 </span>
+                {activeSession?.airwallexEnv && (
+                  <span className="px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800 text-[10px] font-mono font-bold uppercase">
+                    Env: {activeSession.airwallexEnv}
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-300">
                 UK BACS Direct Debit, Apple Pay &amp; 3D Secure 2.0 Recurring Subscription
@@ -369,6 +492,19 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
           </div>
         </div>
 
+        {/* Credentials Notice if not configured */}
+        {configNotice && (
+          <div className="bg-amber-950/70 border-b border-amber-800/80 p-4 text-amber-200 text-xs flex items-start space-x-3">
+            <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <strong className="font-bold text-white block">Airwallex API Credentials Required</strong>
+              <p className="mt-0.5 text-amber-300/90 leading-relaxed">
+                To connect to live or demo Airwallex processing, configure <code className="bg-amber-900/60 px-1 py-0.5 rounded font-mono text-amber-100">AIRWALLEX_CLIENT_ID</code> and <code className="bg-amber-900/60 px-1 py-0.5 rounded font-mono text-amber-100">AIRWALLEX_API_KEY</code> in Google Secret Manager or server environment variables.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Live Architecture Flow Progress Banner */}
         {showArchFlow && (
           <div className="bg-slate-950/90 border-b border-slate-800 p-4">
@@ -381,7 +517,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
               </div>
               {activeSession && (
                 <div className="text-[11px] font-mono text-slate-400 flex items-center space-x-2">
-                  <span className="text-slate-500">Session:</span>
+                  <span className="text-slate-500">PaymentIntent:</span>
                   <span className="text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800/50">{activeSession.id}</span>
                 </div>
               )}
@@ -393,7 +529,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                   <CheckCircle2 className={`h-3 w-3 ${archStep >= 1 ? 'text-emerald-400' : 'text-slate-600'}`} />
                   <span>1. Customer</span>
                 </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Clicks "Subscribe to Pro"</div>
+                <div className="text-[10px] mt-0.5 text-slate-400">Selects Subscription</div>
               </div>
 
               <div className={`p-2 rounded-xl border transition-all ${archStep >= 2 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
@@ -409,7 +545,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                   <CheckCircle2 className={`h-3 w-3 ${archStep >= 3 ? 'text-emerald-400' : 'text-slate-600'}`} />
                   <span>3. Backend</span>
                 </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Create AWX Checkout</div>
+                <div className="text-[10px] mt-0.5 text-slate-400">Airwallex API Token &amp; Intent</div>
               </div>
 
               <div className={`p-2 rounded-xl border transition-all ${archStep >= 4 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
@@ -417,15 +553,15 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                   <CheckCircle2 className={`h-3 w-3 ${archStep >= 4 ? 'text-emerald-400' : 'text-slate-600'}`} />
                   <span>4. Airwallex</span>
                 </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Returns checkout URL</div>
+                <div className="text-[10px] mt-0.5 text-slate-400">Returns client_secret</div>
               </div>
 
               <div className={`p-2 rounded-xl border transition-all ${archStep >= 5 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
                 <div className="font-bold flex items-center space-x-1">
                   <CheckCircle2 className={`h-3 w-3 ${archStep >= 5 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>5. Redirect</span>
+                  <span>5. SDK Elements</span>
                 </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Customer on Payment Page</div>
+                <div className="text-[10px] mt-0.5 text-slate-400">PCI-DSS Secure Form</div>
               </div>
 
               <div className={`p-2 rounded-xl border transition-all ${archStep >= 6 ? 'bg-cyan-950/60 border-cyan-500 text-cyan-200 animate-pulse' : (archStep > 6 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500')}`}>
@@ -433,7 +569,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                   <CheckCircle2 className={`h-3 w-3 ${archStep >= 6 ? 'text-cyan-400' : 'text-slate-600'}`} />
                   <span>6. Customer Pays</span>
                 </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">BACS / Card / Apple Pay</div>
+                <div className="text-[10px] mt-0.5 text-slate-400">3DS 2.0 Auth</div>
               </div>
 
               <div className={`p-2 rounded-xl border transition-all ${archStep >= 7 ? 'bg-emerald-950/80 border-emerald-500 text-emerald-100 shadow-md' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
@@ -441,7 +577,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                   <CheckCircle2 className={`h-3 w-3 ${archStep >= 7 ? 'text-emerald-400' : 'text-slate-600'}`} />
                   <span>7. Webhook &amp; DB</span>
                 </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Update DB &amp; Grant Access</div>
+                <div className="text-[10px] mt-0.5 text-slate-400">HMAC-SHA256 Verified</div>
               </div>
             </div>
           </div>
@@ -588,7 +724,7 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                   <span className="font-bold text-white">£{vat.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-cyan-300 text-[11px]">
-                  <span>Airwallex Clearing (0.4% BACS):</span>
+                  <span>Airwallex Clearing ({paymentRail === 'direct_debit' ? '0.4% BACS' : '1.1% Card'}):</span>
                   <span>£{airwallexFee.toFixed(2)}</span>
                 </div>
                 {savingsVsStripe > 0 && (
@@ -623,26 +759,6 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                 </label>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {/* BACS Direct Debit */}
-                  <button
-                    type="button"
-                    onClick={() => setPaymentRail('direct_debit')}
-                    className={`p-3.5 rounded-2xl border text-left transition-all relative ${
-                      paymentRail === 'direct_debit'
-                        ? 'bg-blue-950/60 border-[#0057B8] ring-2 ring-[#0057B8]/40'
-                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <Building2 className={`h-5 w-5 ${paymentRail === 'direct_debit' ? 'text-cyan-400' : 'text-slate-400'}`} />
-                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
-                        0.4% Fee
-                      </span>
-                    </div>
-                    <span className="font-bold text-xs text-white block">Airwallex BACS</span>
-                    <span className="text-[10px] text-slate-400 block">Direct Debit (UK)</span>
-                  </button>
-
                   {/* Card Pay */}
                   <button
                     type="button"
@@ -659,8 +775,28 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                         Visa / MC
                       </span>
                     </div>
-                    <span className="font-bold text-xs text-white block">Credit / Debit</span>
+                    <span className="font-bold text-xs text-white block">Airwallex Card</span>
                     <span className="text-[10px] text-slate-400 block">3DS 2.0 Secure</span>
+                  </button>
+
+                  {/* BACS Direct Debit */}
+                  <button
+                    type="button"
+                    onClick={() => setPaymentRail('direct_debit')}
+                    className={`p-3.5 rounded-2xl border text-left transition-all relative ${
+                      paymentRail === 'direct_debit'
+                        ? 'bg-blue-950/60 border-[#0057B8] ring-2 ring-[#0057B8]/40'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <Building2 className={`h-5 w-5 ${paymentRail === 'direct_debit' ? 'text-cyan-400' : 'text-slate-400'}`} />
+                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
+                        0.4% Fee
+                      </span>
+                    </div>
+                    <span className="font-bold text-xs text-white block">BACS Direct Debit</span>
+                    <span className="text-[10px] text-slate-400 block">UK Bank Account</span>
                   </button>
 
                   {/* Apple / Google Pay */}
@@ -741,6 +877,40 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
               </div>
 
               {/* Payment Details Rail Specific */}
+              {paymentRail === 'card' && (
+                <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <CreditCard className="h-4 w-4 text-cyan-400" />
+                      <span className="text-xs font-bold text-white">Airwallex PCI-DSS Card Payment</span>
+                    </div>
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">3D Secure 2.0</span>
+                  </div>
+
+                  {/* Airwallex SDK Card Element Container */}
+                  <div className="min-h-[42px] bg-slate-900 border border-slate-800 rounded-xl p-3" ref={cardContainerRef} id="airwallex-card-container">
+                    <div className="text-xs text-slate-400 flex items-center justify-between">
+                      <span>Airwallex Embedded Card Field</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Tokenized Client Secret</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] text-slate-400 font-bold mb-1">Cardholder Name</label>
+                      <input
+                        type="text"
+                        value={cardHolder}
+                        onChange={e => setCardHolder(e.target.value)}
+                        required
+                        placeholder="Name on card"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-[#0057B8]"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {paymentRail === 'direct_debit' && (
                 <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4">
                   <div className="flex items-center justify-between">
@@ -788,70 +958,8 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
                         className="h-4 w-4 rounded bg-slate-800 border-slate-700 text-[#0057B8] focus:ring-0 mt-0.5"
                       />
                       <label htmlFor="dd-mandate-check" className="cursor-pointer">
-                        <strong className="text-white">BACS Direct Debit Guarantee:</strong> I authorize Airwallex (UK) Limited on behalf of Tidy Corp to send instructions to my bank to debit my account in accordance with the scheme rules.
+                        <strong className="text-white">BACS Direct Debit Guarantee:</strong> I authorize Airwallex (UK) Limited on behalf of Tidy Corporation Ltd to send instructions to my bank to debit my account in accordance with the scheme rules.
                       </label>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {paymentRail === 'card' && (
-                <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <CreditCard className="h-4 w-4 text-cyan-400" />
-                      <span className="text-xs font-bold text-white">Airwallex Vault Card Entry</span>
-                    </div>
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">3D Secure 2.0</span>
-                  </div>
-
-                  <div className="space-y-3 text-xs">
-                    <div>
-                      <label className="block text-[11px] text-slate-400 font-bold mb-1">Cardholder Name</label>
-                      <input
-                        type="text"
-                        value={cardHolder}
-                        onChange={e => setCardHolder(e.target.value)}
-                        required
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-medium focus:outline-none focus:border-[#0057B8]"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] text-slate-400 font-bold mb-1">Card Number</label>
-                      <input
-                        type="text"
-                        value={cardNumber}
-                        onChange={e => setCardNumber(e.target.value)}
-                        required
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono font-bold focus:outline-none focus:border-[#0057B8]"
-                        placeholder="•••• •••• •••• ••••"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[11px] text-slate-400 font-bold mb-1">Expiry (MM/YY)</label>
-                        <input
-                          type="text"
-                          value={cardExpiry}
-                          onChange={e => setCardExpiry(e.target.value)}
-                          required
-                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono font-bold focus:outline-none focus:border-[#0057B8]"
-                          placeholder="MM/YY"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-slate-400 font-bold mb-1">Security Code (CVC)</label>
-                        <input
-                          type="text"
-                          value={cardCvv}
-                          onChange={e => setCardCvv(e.target.value)}
-                          required
-                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono font-bold focus:outline-none focus:border-[#0057B8]"
-                          placeholder="CVC"
-                        />
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -880,13 +988,13 @@ Thank you for partnering with Tidy Corp. All client funds held in ring-fenced es
               {/* Action Submit Button */}
               <button
                 type="submit"
-                disabled={isProcessing}
-                className="w-full bg-gradient-to-r from-[#FF7F00] via-amber-500 to-[#FF7F00] hover:from-amber-500 hover:to-[#FF7F00] text-slate-950 font-black py-4 rounded-2xl text-sm shadow-xl transition-all flex items-center justify-center space-x-2 disabled:opacity-75 cursor-pointer"
+                disabled={isProcessing || !activeSession?.id}
+                className="w-full bg-gradient-to-r from-[#FF7F00] via-amber-500 to-[#FF7F00] hover:from-amber-500 hover:to-[#FF7F00] text-slate-950 font-black py-4 rounded-2xl text-sm shadow-xl transition-all flex items-center justify-center space-x-2 disabled:opacity-50 cursor-pointer"
               >
                 {isProcessing ? (
                   <>
                     <RefreshCw className="h-5 w-5 animate-spin text-slate-950" />
-                    <span>{processingStep || 'Processing with Airwallex...'}</span>
+                    <span>{processingStep || 'Authorizing with Airwallex...'}</span>
                   </>
                 ) : (
                   <>

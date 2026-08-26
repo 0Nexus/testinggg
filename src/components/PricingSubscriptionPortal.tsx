@@ -264,7 +264,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
               )}
               <div className="inline-flex items-center space-x-2 bg-[#0057B8]/20 border border-[#0057B8]/40 text-cyan-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider">
                 <Shield className="h-3.5 w-3.5 text-cyan-400" />
-                <span>Tidy Corp SaaS &amp; Escrow Fee Policy</span>
+                <span>Tidy Corporation Ltd SaaS &amp; Escrow Fee Policy</span>
               </div>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">

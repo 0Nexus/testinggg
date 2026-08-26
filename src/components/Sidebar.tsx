@@ -90,12 +90,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Mobile Top Header Bar with Hamburger */}
       <div className="lg:hidden sticky top-0 z-40 bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center justify-between shadow-md">
         <div
-          className="flex items-center space-x-3 cursor-pointer select-none"
+          className="flex items-center space-x-1.5 cursor-pointer select-none"
           onClick={() => handleSelectTab('landing')}
         >
           <TidyCorpLogo className="h-8 w-8" />
           <span className="font-black text-base text-white tracking-tight">
-            tidy corporation LTD
+            Tidy Corporation Ltd
           </span>
         </div>
 
@@ -136,15 +136,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         } ${collapsed ? 'lg:w-20' : 'lg:w-64'}`}
       >
         {/* Sidebar Header: Logo & Branding */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-slate-800/80 shrink-0">
+        <div className="h-16 flex items-center justify-between px-3.5 border-b border-slate-800/80 shrink-0">
           <div
-            className="flex items-center space-x-3 cursor-pointer select-none overflow-hidden"
+            className="flex items-center space-x-1.5 cursor-pointer select-none overflow-hidden"
             onClick={() => handleSelectTab('landing')}
           >
-            <TidyCorpLogo className="h-9 w-9 shrink-0" />
+            <TidyCorpLogo className="h-8 w-8 shrink-0" />
             {!collapsed && (
               <span className="font-black text-sm tracking-tight text-white whitespace-nowrap truncate">
-                tidy corporation LTD
+                Tidy Corporation Ltd
               </span>
             )}
           </div>

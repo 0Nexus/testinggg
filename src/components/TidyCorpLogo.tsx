@@ -11,17 +11,17 @@ export const TidyCorpLogo: React.FC<TidyCorpLogoProps> = ({
   showText = false,
 }) => {
   return (
-    <div className={`flex items-center space-x-3 select-none ${className}`}>
+    <div className="flex items-center space-x-1.5 sm:space-x-2 select-none">
       {/* Precision Vector SVG Logo referencing /favicon.svg */}
       <img
         src="/favicon.svg"
-        alt="Tidy Corp Logo"
-        className="w-full h-full object-contain filter drop-shadow-md"
+        alt="Tidy Corporation Ltd Logo"
+        className={`${className} object-contain filter drop-shadow-md shrink-0`}
       />
 
       {showText && (
         <span className="text-sm sm:text-base font-black tracking-tight text-white whitespace-nowrap">
-          tidy corporation LTD
+          Tidy Corporation Ltd
         </span>
       )}
     </div>

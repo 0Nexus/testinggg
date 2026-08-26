@@ -76,10 +76,10 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
       {/* Top Header Branding */}
       <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <TidyCorpLogo className="h-9 w-9" />
+          <div className="flex items-center space-x-1.5">
+            <TidyCorpLogo className="h-8 w-8" />
             <span className="font-black text-lg tracking-tight text-white">
-              tidy corporation LTD
+              Tidy Corporation Ltd
             </span>
           </div>
 

@@ -1059,7 +1059,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               SECURE PAYMENTS FOR HOME REPAIRS
             </span>
             <h2 className="text-2xl sm:text-4xl font-black tracking-tight text-slate-950">
-              Try Tidy Corp on your next project.
+              Try Tidy Corporation Ltd on your next project.
             </h2>
             <p className="text-slate-950/90 font-bold text-sm">
               Secure. Compliant. Verified. Trusted. Let's build something tidy together.

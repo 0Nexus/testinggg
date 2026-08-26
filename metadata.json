@@ -1,6 +1,6 @@
 {
-  "name": "TidyCorp",
-  "description": "Tidy Corp AI Secure: FCA-compliant UK renovation escrow platform with multi-slide human realism carousel, Airwallex recurring subscriptions & BACS Direct Debit checkout, live credit deduction, Awaab's Law compliance, and UK GDPR/PECR cookie collection.",
+  "name": "Tidy Corporation Ltd",
+  "description": "Tidy Corporation Ltd AI Secure: FCA-compliant UK renovation escrow platform with multi-slide human realism carousel, Airwallex recurring subscriptions & BACS Direct Debit checkout, live credit deduction, Awaab's Law compliance, and UK GDPR/PECR cookie collection.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

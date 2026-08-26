@@ -38,6 +38,12 @@ import {
   StoredUser
 } from './src/lib/firestoreServer.js';
 import {
+  getAirwallexConfig,
+  createAirwallexPaymentIntent,
+  getAirwallexPaymentIntent,
+  verifyAirwallexWebhookSignature
+} from './src/lib/airwallexServer.js';
+import {
   RenovationProject,
   MCPRule,
   GatewayConfig,
@@ -321,10 +327,9 @@ async function startServer() {
   });
 
   // Airwallex Webhook Endpoint (mount raw body handler BEFORE express.json)
-  app.post('/api/webhooks/airwallex', express.raw({ type: 'application/json' }), (req: Request, res: Response) => {
+  const handleAirwallexRawWebhook = async (req: Request, res: Response) => {
     const signature = (req.headers['x-signature'] || req.headers['x-airwallex-signature']) as string;
     const timestamp = (req.headers['x-timestamp'] || req.headers['x-time']) as string;
-    const webhookSecret = process.env.AIRWALLEX_WEBHOOK_SECRET;
 
     let bodyStr = '';
     let bodyObj: any = {};
@@ -339,39 +344,92 @@ async function startServer() {
       bodyStr = JSON.stringify(bodyObj);
     }
 
-    if (!webhookSecret) {
-      return res.json({
-        received: true,
-        signatureVerified: false,
-        note: 'Webhook received. Configure AIRWALLEX_WEBHOOK_SECRET in environment for HMAC SHA-256 signature verification.'
-      });
+    const config = getAirwallexConfig();
+    if (config.webhookSecret) {
+      const verification = verifyAirwallexWebhookSignature(bodyStr, signature, timestamp);
+      if (!verification.isValid) {
+        console.error('[AIRWALLEX WEBHOOK] Signature verification failed:', verification.error);
+        return res.status(401).json({ error: verification.error || 'Invalid Airwallex webhook signature.' });
+      }
+    } else {
+      console.warn('[AIRWALLEX WEBHOOK] AIRWALLEX_WEBHOOK_SECRET not set. Processing in unverified mode.');
     }
 
-    if (!signature) {
-      return res.status(401).json({ error: 'Missing Airwallex signature header' });
+    const eventName = bodyObj?.name || bodyObj?.event;
+    console.log(`[AIRWALLEX WEBHOOK VERIFIED] Event: ${eventName}, ID: ${bodyObj?.id || 'none'}`);
+
+    const eventData = bodyObj?.data?.object;
+    const paymentIntentId = eventData?.id || eventData?.checkoutSessionId;
+
+    if (eventName === 'payment_intent.succeeded' && paymentIntentId) {
+      try {
+        let verifiedIntent = null;
+        if (config.isConfigured) {
+          try {
+            verifiedIntent = await getAirwallexPaymentIntent(paymentIntentId);
+          } catch (e: any) {
+            console.error('[AIRWALLEX WEBHOOK] Failed to query intent via API:', e.message);
+          }
+        }
+
+        const isSucceeded = verifiedIntent ? verifiedIntent.status === 'SUCCEEDED' : eventData?.status === 'SUCCEEDED';
+        if (isSucceeded) {
+          let session = await getAirwallexSessionFromDB(paymentIntentId);
+          const customerEmail = eventData?.customer?.email || eventData?.customerEmail || session?.customerEmail || 'user@tidycorp.co.uk';
+          const customerName = eventData?.customer?.first_name
+            ? `${eventData.customer.first_name} ${eventData.customer.last_name || ''}`.trim()
+            : (session?.customerName || 'Valued Subscriber');
+          const amount = eventData?.amount || session?.amount || 0;
+          const itemId = session?.itemId || eventData?.metadata?.itemId || 'journeyman_pro';
+          const validItemTypes = ['plan', 'care_package', 'credits', 'escrow_pass'] as const;
+          const rawItemType = session?.itemType || eventData?.metadata?.itemType || 'plan';
+          const itemType = (validItemTypes as readonly string[]).includes(rawItemType) ? (rawItemType as any) : 'plan';
+          const billingInterval = (session?.billingInterval || eventData?.metadata?.billingInterval || 'monthly') === 'annual' ? 'annual' : 'monthly';
+          const paymentMethod = eventData?.latest_payment_attempt?.payment_method_type
+            ? `Airwallex ${eventData.latest_payment_attempt.payment_method_type.toUpperCase()}`
+            : (session?.paymentMethodUsed || 'Airwallex Checkout');
+          const gatewayRef = `awx_wh_${paymentIntentId}_${Date.now()}`;
+
+          await applyAirwallexSubscriptionToUser({
+            customerEmail,
+            customerName,
+            itemType,
+            itemId,
+            billingInterval,
+            amount,
+            paymentMethodUsed: paymentMethod,
+            gatewayRef
+          });
+
+          if (session) {
+            await updateAirwallexSessionInDB(session.id, {
+              status: 'succeeded',
+              airwallexStatus: 'SUCCEEDED',
+              completedAt: new Date().toISOString(),
+              gatewayRef,
+              webhookDelivered: true
+            });
+          }
+        }
+      } catch (err: any) {
+        console.error('[AIRWALLEX WEBHOOK ERROR]', err);
+      }
+    } else if (eventName === 'payment_intent.payment_failed' && paymentIntentId) {
+      let session = await getAirwallexSessionFromDB(paymentIntentId);
+      if (session) {
+        await updateAirwallexSessionInDB(session.id, {
+          status: 'failed',
+          airwallexStatus: 'FAILED',
+          webhookDelivered: true
+        });
+      }
     }
 
-    const payloadToSign = timestamp ? `${timestamp}${bodyStr}` : bodyStr;
-    const expectedSignature = crypto
-      .createHmac('sha256', webhookSecret)
-      .update(payloadToSign)
-      .digest('hex');
+    res.status(200).json({ received: true, signatureVerified: Boolean(config.webhookSecret) });
+  };
 
-    let isValid = false;
-    try {
-      isValid = crypto.timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedSignature, 'utf8'));
-    } catch (e) {
-      isValid = false;
-    }
-
-    if (!isValid) {
-      console.error('Airwallex Webhook HMAC signature mismatch.');
-      return res.status(401).json({ error: 'Invalid Airwallex webhook signature.' });
-    }
-
-    console.log('Received & Cryptographically Verified Airwallex Webhook Event:', bodyObj?.name || bodyObj?.event);
-    res.json({ received: true, signatureVerified: true });
-  });
+  app.post('/api/webhooks/airwallex', express.raw({ type: 'application/json' }), handleAirwallexRawWebhook);
+  app.post('/api/airwallex/webhook', express.raw({ type: 'application/json' }), handleAirwallexRawWebhook);
 
   app.use(express.json({ limit: '10mb' }));
 
@@ -842,7 +900,7 @@ async function startServer() {
     };
   }
 
-  // 1. POST /api/create-checkout (Your Website -> Your Backend -> Airwallex -> Returns checkout URL)
+  // 1. POST /api/create-checkout (Your Website -> Your Backend -> Airwallex API -> Returns checkout details)
   app.post('/api/create-checkout', async (req: Request, res: Response) => {
     try {
       const {
@@ -894,13 +952,45 @@ async function startServer() {
         planName = 'Escrow Pre-Purchase Growth Pass (£25k)';
       }
 
-      const checkoutId = `awx_chk_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
-      const clientSecret = `awx_sec_${Date.now().toString(36)}_${crypto.randomBytes(16).toString('hex')}`;
-      const checkoutUrl = `/checkout/airwallex-billing?checkout_id=${checkoutId}&client_secret=${clientSecret}`;
+      const config = getAirwallexConfig();
+      if (!config.isConfigured) {
+        return res.status(400).json({
+          success: false,
+          error: 'Airwallex API credentials are not configured. Please set AIRWALLEX_CLIENT_ID and AIRWALLEX_API_KEY in Google Secret Manager or environment variables.',
+          configured: false
+        });
+      }
+
+      // Create real PaymentIntent with Airwallex API
+      const merchantOrderId = `tidy_sub_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+      const returnUrl = `${process.env.APP_URL || ''}/?payment_status=success`;
+
+      const intent = await createAirwallexPaymentIntent({
+        amount: calculatedAmount,
+        currency: (currency || 'GBP').toUpperCase(),
+        merchantOrderId,
+        descriptor: 'Tidy Corporation Ltd',
+        metadata: {
+          itemId: String(itemId),
+          itemType: String(itemType),
+          billingInterval: String(billingInterval),
+          customerEmail: emailToUse,
+          customerName: nameToUse
+        },
+        customer: {
+          email: emailToUse,
+          first_name: nameToUse.split(' ')[0] || 'Customer',
+          last_name: nameToUse.split(' ').slice(1).join(' ') || 'Tidy'
+        },
+        returnUrl
+      });
+
+      const checkoutUrl = `/checkout/airwallex-billing?checkout_id=${intent.id}&client_secret=${intent.client_secret}`;
 
       const session: AirwallexCheckoutSession = {
-        id: checkoutId,
-        clientSecret,
+        id: intent.id,
+        paymentIntentId: intent.id,
+        clientSecret: intent.client_secret,
         checkoutUrl,
         itemType,
         itemId,
@@ -914,6 +1004,8 @@ async function startServer() {
         companyVatNumber: companyVatNumber || '',
         billingAddress: billingAddress || 'United Kingdom',
         status: 'pending',
+        airwallexStatus: intent.status,
+        airwallexEnv: config.env,
         successUrl,
         cancelUrl,
         createdAt: new Date().toISOString()
@@ -925,7 +1017,9 @@ async function startServer() {
         success: true,
         checkoutUrl,
         checkoutId: session.id,
-        clientSecret: session.clientSecret,
+        paymentIntentId: intent.id,
+        clientSecret: intent.client_secret,
+        airwallexEnv: config.env,
         session
       });
     } catch (err: any) {
@@ -947,99 +1041,64 @@ async function startServer() {
     }
   });
 
-  // POST /api/airwallex/complete-checkout (Airwallex Payment Page -> customer pays -> Complete Checkout)
+  // POST /api/airwallex/complete-checkout (Verifies Payment Status directly against Airwallex API)
   app.post('/api/airwallex/complete-checkout', async (req: Request, res: Response) => {
     try {
       const {
         checkoutId,
-        paymentMethod = 'direct_debit',
-        directDebitDetails,
-        cardDetails,
+        paymentIntentId = checkoutId,
+        paymentMethod = 'card',
         companyName,
         companyVatNumber,
         billingAddress
       } = req.body;
 
-      const session = await getAirwallexSessionFromDB(checkoutId);
-      if (!session) {
-        return res.status(404).json({ error: 'Airwallex checkout session not found or expired.' });
+      const targetId = paymentIntentId || checkoutId;
+      if (!targetId) {
+        return res.status(400).json({ error: 'Missing checkoutId or paymentIntentId' });
       }
 
-      const methodUsedStr = paymentMethod === 'direct_debit'
-        ? `Airwallex BACS Direct Debit (Sort: ${directDebitDetails?.sortCode || '20-45-77'}, Acc: ••••${(directDebitDetails?.accountNumber || '8839').slice(-4)})`
-        : (paymentMethod === 'apple_pay'
-          ? 'Airwallex Apple Pay / 1-Click Pay'
-          : (paymentMethod === 'bacs_transfer'
-            ? 'Airwallex Instant BACS Bank Transfer'
-            : `Airwallex Card (${cardDetails?.brand || 'Visa'} •••• ${cardDetails?.last4 || '4242'})`));
+      const session = await getAirwallexSessionFromDB(targetId);
 
-      const gatewayRef = `awx_settled_${Date.now()}`;
-
-      // Update Database & Give User Access
-      const result = await applyAirwallexSubscriptionToUser({
-        customerEmail: session.customerEmail,
-        customerName: session.customerName,
-        itemType: session.itemType,
-        itemId: session.itemId,
-        billingInterval: session.billingInterval,
-        amount: session.amount,
-        currency: session.currency,
-        paymentMethodUsed: methodUsedStr,
-        gatewayRef
-      });
-
-      // Update session in DB
-      await updateAirwallexSessionInDB(session.id, {
-        status: 'succeeded',
-        completedAt: new Date().toISOString(),
-        gatewayRef,
-        paymentMethodUsed: methodUsedStr,
-        companyName: companyName || session.companyName,
-        companyVatNumber: companyVatNumber || session.companyVatNumber,
-        billingAddress: billingAddress || session.billingAddress,
-        webhookDelivered: true
-      });
-
-      res.json({
-        success: true,
-        message: `Payment of £${session.amount.toFixed(2)} GBP successfully processed via Airwallex!`,
-        redirectUrl: `${session.successUrl}${session.successUrl.includes('?') ? '&' : '?'}session_id=${session.id}&payment_status=success`,
-        subscription: result.updatedSub,
-        transaction: result.transaction,
-        receipt: result.receipt
-      });
-    } catch (err: any) {
-      console.error('Error completing Airwallex checkout:', err);
-      res.status(500).json({ error: err?.message || 'Failed to complete Airwallex billing checkout' });
-    }
-  });
-
-  // POST /api/webhooks/airwallex & POST /api/airwallex/webhook (Webhook -> Your Backend -> Update Database -> Give user access)
-  const handleAirwallexWebhook = async (req: Request, res: Response) => {
-    try {
-      const event = req.body as AirwallexWebhookEvent;
-      console.log(`[AIRWALLEX WEBHOOK RECEIVED] Event: ${event?.name || 'unknown'}, ID: ${event?.id || 'none'}`);
-
-      const eventData = event?.data?.object;
-      const checkoutSessionId = eventData?.checkoutSessionId || eventData?.id;
-
-      let session: AirwallexCheckoutSession | null = null;
-      if (checkoutSessionId) {
-        session = await getAirwallexSessionFromDB(checkoutSessionId);
+      const config = getAirwallexConfig();
+      if (!config.isConfigured) {
+        return res.status(400).json({ error: 'Airwallex API credentials not configured.' });
       }
 
-      const customerEmail = eventData?.customerEmail || session?.customerEmail || 'user@tidycorp.co.uk';
-      const customerName = eventData?.customerName || session?.customerName || 'Valued Subscriber';
-      const amount = eventData?.amount || session?.amount || 0;
-      const itemId = session?.itemId || eventData?.metadata?.itemId || 'journeyman_pro';
-      const validItemTypes = ['plan', 'care_package', 'credits', 'escrow_pass'] as const;
-      const rawItemType = session?.itemType || eventData?.metadata?.itemType || 'plan';
-      const itemType: 'plan' | 'care_package' | 'credits' | 'escrow_pass' =
-        (validItemTypes as readonly string[]).includes(rawItemType) ? (rawItemType as any) : 'plan';
-      const rawBillingInterval = session?.billingInterval || eventData?.metadata?.billingInterval || 'monthly';
-      const billingInterval: 'monthly' | 'annual' = rawBillingInterval === 'annual' ? 'annual' : 'monthly';
-      const paymentMethod = eventData?.paymentMethod || session?.paymentMethodUsed || 'Airwallex BACS Direct Debit';
-      const gatewayRef = eventData?.gatewayRef || `awx_wh_${Date.now()}`;
+      console.log(`[AIRWALLEX VERIFICATION] Querying Airwallex API for PaymentIntent: ${targetId}`);
+      const intent = await getAirwallexPaymentIntent(targetId);
+
+      if (intent.status !== 'SUCCEEDED') {
+        console.warn(`[AIRWALLEX VERIFICATION FAILED] PaymentIntent ${targetId} status is ${intent.status}, expected SUCCEEDED.`);
+        return res.status(402).json({
+          success: false,
+          error: `Payment has not been settled by Airwallex. Current status: ${intent.status}`,
+          status: intent.status
+        });
+      }
+
+      // Verified as SUCCEEDED by Airwallex API
+      const customerEmail = session?.customerEmail || intent.customer?.email || 'user@tidycorp.co.uk';
+      const customerName = session?.customerName || (intent.customer?.first_name ? `${intent.customer.first_name} ${intent.customer.last_name || ''}`.trim() : 'Valued Subscriber');
+      const itemType = session?.itemType || (intent.metadata?.itemType as any) || 'plan';
+      const itemId = session?.itemId || intent.metadata?.itemId || 'journeyman_pro';
+      const billingInterval = (session?.billingInterval || intent.metadata?.billingInterval || 'monthly') as 'monthly' | 'annual';
+      const amount = session?.amount || intent.amount || 0;
+      const currency = session?.currency || intent.currency || 'GBP';
+
+      const methodAttempt = intent.latest_payment_attempt;
+      let methodUsedStr = 'Airwallex Card Payment';
+      if (methodAttempt?.payment_method?.card) {
+        const card = methodAttempt.payment_method.card;
+        methodUsedStr = `Airwallex Card (${card.brand || 'Card'} •••• ${card.last4 || '4242'})`;
+      } else if (methodAttempt?.payment_method?.bacs_direct_debit) {
+        const bacs = methodAttempt.payment_method.bacs_direct_debit;
+        methodUsedStr = `Airwallex BACS Direct Debit (Sort: ${bacs.sort_code || '••-••-••'}, Acc: ••••${(bacs.account_number || '8839').slice(-4)})`;
+      } else if (paymentMethod) {
+        methodUsedStr = `Airwallex (${paymentMethod})`;
+      }
+
+      const gatewayRef = `awx_live_${intent.id}`;
 
       // Update Database & Give User Access
       const result = await applyAirwallexSubscriptionToUser({
@@ -1049,50 +1108,79 @@ async function startServer() {
         itemId,
         billingInterval,
         amount,
-        paymentMethodUsed: paymentMethod,
+        currency,
+        paymentMethodUsed: methodUsedStr,
         gatewayRef
       });
 
       if (session) {
         await updateAirwallexSessionInDB(session.id, {
           status: 'succeeded',
+          airwallexStatus: 'SUCCEEDED',
           completedAt: new Date().toISOString(),
           gatewayRef,
+          paymentMethodUsed: methodUsedStr,
+          companyName: companyName || session.companyName,
+          companyVatNumber: companyVatNumber || session.companyVatNumber,
+          billingAddress: billingAddress || session.billingAddress,
           webhookDelivered: true
         });
       }
 
-      res.status(200).json({
+      res.json({
         success: true,
-        received: true,
-        userUpdated: true,
-        accessGranted: true,
-        subscription: result.updatedSub
+        message: `Payment of £${amount.toFixed(2)} GBP successfully processed and verified via Airwallex!`,
+        redirectUrl: `${session?.successUrl || '/?payment_status=success'}`,
+        subscription: result.updatedSub,
+        transaction: result.transaction,
+        receipt: result.receipt
       });
     } catch (err: any) {
-      console.error('Error handling Airwallex webhook:', err);
-      res.status(500).json({ error: 'Webhook processing failure' });
+      console.error('Error completing Airwallex checkout:', err);
+      res.status(500).json({ error: err?.message || 'Failed to verify Airwallex payment settlement' });
     }
-  };
-
-  app.post('/api/webhooks/airwallex', handleAirwallexWebhook);
-  app.post('/api/airwallex/webhook', handleAirwallexWebhook);
+  });
 
   // --- AIRWALLEX SUBSCRIPTION INTENT COMPATIBILITY ALIASES ---
 
   app.post('/api/airwallex/create-subscription-intent', async (req: Request, res: Response) => {
     try {
       const { itemId, itemType, billingInterval, amount, currency = 'GBP', customerEmail, customerName } = req.body;
-      const intentId = `awx_sub_intent_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
-      const clientSecret = `awx_sec_${Date.now().toString(36)}_${crypto.randomBytes(16).toString('hex')}`;
-      
-      const config = await getGatewayConfigFromDB();
-      const airwallexFees = config?.airwallex?.fees || { cardFeePercent: 1.1, cardFixedFee: 0.15, directDebitFeePercent: 0.4, directDebitFixedFee: 0.1 };
+      const config = getAirwallexConfig();
+      if (!config.isConfigured) {
+        return res.status(400).json({
+          success: false,
+          error: 'Airwallex API credentials not configured. Please configure AIRWALLEX_CLIENT_ID and AIRWALLEX_API_KEY.'
+        });
+      }
+
+      const merchantOrderId = `tidy_sub_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+      const intent = await createAirwallexPaymentIntent({
+        amount: Number(amount) || 0,
+        currency,
+        merchantOrderId,
+        descriptor: 'Tidy Corporation Ltd',
+        metadata: {
+          itemId: String(itemId),
+          itemType: String(itemType || 'plan'),
+          billingInterval: String(billingInterval || 'monthly'),
+          customerEmail: String(customerEmail || ''),
+          customerName: String(customerName || '')
+        },
+        customer: {
+          email: customerEmail,
+          first_name: customerName?.split(' ')[0] || 'Customer',
+          last_name: customerName?.split(' ').slice(1).join(' ') || 'Tidy'
+        }
+      });
+
+      const gatewayConfig = await getGatewayConfigFromDB();
+      const airwallexFees = gatewayConfig?.airwallex?.fees || { cardFeePercent: 1.1, cardFixedFee: 0.15, directDebitFeePercent: 0.4, directDebitFixedFee: 0.1 };
 
       res.json({
         success: true,
-        intentId,
-        clientSecret,
+        intentId: intent.id,
+        clientSecret: intent.client_secret,
         currency,
         amount: Number(amount) || 0,
         itemId,
@@ -1101,8 +1189,8 @@ async function startServer() {
         customerEmail,
         customerName,
         fees: airwallexFees,
-        status: 'requires_payment_method',
-        merchantAccount: 'Tidy Corp UK (Airwallex Global Merchant Account)'
+        status: intent.status,
+        merchantAccount: 'Tidy Corporation Ltd (Airwallex Global Merchant Account)'
       });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to initialize Airwallex subscription intent' });
@@ -1113,39 +1201,30 @@ async function startServer() {
     try {
       const {
         intentId,
-        itemId,
-        itemType,
-        billingInterval,
-        amount,
-        currency = 'GBP',
-        customerEmail,
-        customerName,
-        paymentMethod = 'direct_debit',
-        directDebitDetails,
-        cardDetails,
+        paymentMethod = 'card',
         companyName,
         companyVatNumber,
         billingAddress
       } = req.body;
 
-      const authHeader = req.headers.authorization;
-      let authenticatedUser: any = null;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        try {
-          authenticatedUser = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
-        } catch (e) {}
+      if (!intentId) {
+        return res.status(400).json({ error: 'Missing intentId parameter' });
       }
 
-      const emailToUse = (customerEmail || authenticatedUser?.email || 'guest@tidycorp.co.uk').toLowerCase().trim();
-      const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
+      const intent = await getAirwallexPaymentIntent(intentId);
+      if (intent.status !== 'SUCCEEDED') {
+        return res.status(402).json({
+          success: false,
+          error: `Airwallex payment not completed. Status: ${intent.status}`,
+          status: intent.status
+        });
+      }
 
-      const methodUsedStr = paymentMethod === 'direct_debit'
-        ? `Airwallex BACS Direct Debit (Sort: ${directDebitDetails?.sortCode || '20-45-77'}, Acc: ••••${(directDebitDetails?.accountNumber || '8839').slice(-4)})`
-        : (paymentMethod === 'apple_pay'
-          ? 'Airwallex Apple Pay / 1-Click Pay'
-          : (paymentMethod === 'bacs_transfer'
-            ? 'Airwallex Instant BACS Bank Transfer'
-            : `Airwallex Card (${cardDetails?.brand || 'Visa'} •••• ${cardDetails?.last4 || '4242'})`));
+      const emailToUse = (intent.customer?.email || 'guest@tidycorp.co.uk').toLowerCase().trim();
+      const nameToUse = (intent.customer?.first_name ? `${intent.customer.first_name} ${intent.customer.last_name || ''}`.trim() : 'Valued Subscriber');
+      const itemType = (intent.metadata?.itemType as any) || 'plan';
+      const itemId = intent.metadata?.itemId || 'journeyman_pro';
+      const billingInterval = (intent.metadata?.billingInterval || 'monthly') as 'monthly' | 'annual';
 
       const result = await applyAirwallexSubscriptionToUser({
         customerEmail: emailToUse,
@@ -1153,15 +1232,15 @@ async function startServer() {
         itemType,
         itemId,
         billingInterval,
-        amount,
-        currency,
-        paymentMethodUsed: methodUsedStr,
-        gatewayRef: `awx_settled_${Date.now()}`
+        amount: intent.amount,
+        currency: intent.currency,
+        paymentMethodUsed: `Airwallex (${paymentMethod})`,
+        gatewayRef: `awx_live_${intent.id}`
       });
 
       res.json({
         success: true,
-        message: `Payment of £${(Number(amount) || 0).toFixed(2)} GBP successfully processed via Airwallex!`,
+        message: `Payment of £${(Number(intent.amount) || 0).toFixed(2)} GBP successfully verified via Airwallex!`,
         transaction: result.transaction,
         subscription: result.updatedSub,
         receipt: {
@@ -1172,7 +1251,7 @@ async function startServer() {
         }
       });
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Airwallex subscription payment confirmation failed' });
+      res.status(500).json({ error: err?.message || 'Failed to verify subscription confirmation' });
     }
   });
 

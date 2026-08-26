@@ -429,6 +429,7 @@ export type AirwallexCheckoutSessionStatus = 'pending' | 'succeeded' | 'failed' 
 
 export interface AirwallexCheckoutSession {
   id: string;
+  paymentIntentId?: string;
   clientSecret: string;
   checkoutUrl: string;
   itemType: 'plan' | 'care_package' | 'credits' | 'escrow_pass';
@@ -443,6 +444,8 @@ export interface AirwallexCheckoutSession {
   companyVatNumber?: string;
   billingAddress?: string;
   status: AirwallexCheckoutSessionStatus;
+  airwallexStatus?: string;
+  airwallexEnv?: 'demo' | 'prod';
   successUrl: string;
   cancelUrl: string;
   createdAt: string;

@@ -60,12 +60,12 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
           {/* Logo & Branding */}
-          <div className="flex items-center space-x-2 sm:space-x-3 cursor-pointer shrink-0" onClick={() => handleSelectTab('landing')}>
-            <TidyCorpLogo className="h-8 w-8 sm:h-10 sm:w-10" />
+          <div className="flex items-center space-x-1.5 sm:space-x-2 cursor-pointer shrink-0" onClick={() => handleSelectTab('landing')}>
+            <TidyCorpLogo className="h-8 w-8 sm:h-9 sm:w-9" />
             <div>
               <div className="flex items-center space-x-1.5 sm:space-x-2">
                 <span className="font-black text-sm sm:text-lg tracking-tight text-white whitespace-nowrap">
-                  Tidy Corp <span className="text-[#FF7F00]">AI Secure</span>
+                  Tidy Corporation Ltd <span className="text-[#FF7F00]">AI Secure</span>
                 </span>
                 <span className="hidden sm:inline-block bg-[#0057B8]/30 text-blue-300 text-[10px] px-2 py-0.5 rounded-full font-bold border border-blue-400/30 whitespace-nowrap">
                   Tidy Secure Pay
