@@ -412,7 +412,7 @@ export interface CookieConsentPreferences {
   marketing: boolean;
   consentedAt: string;
   consentVersion: string;
-  userIpHash: string;
+  userIpHash?: string;
 }
 
 export interface CookieConsentAudit {
@@ -472,6 +472,3 @@ export interface AirwallexWebhookEvent {
     };
   };
 }
-
-
-
