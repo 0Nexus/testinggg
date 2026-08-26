@@ -404,14 +404,15 @@ export interface ContractorInvitationLog {
   invitedBy: string;
 }
 
+// UK GDPR & PECR Cookie Consent
 export interface CookieConsentPreferences {
-  strictlyNecessary: boolean; // Always true (Session, Auth, Airwallex Token, CSRF)
-  functional: boolean;        // Theme, localized currency, saved quote drafts
-  analytics: boolean;         // Latency telemetry, milestone velocity metrics
-  marketing: boolean;         // Partner warranty tracking, invite attribution
-  consentedAt: string;        // ISO timestamp
-  consentVersion: string;     // e.g. "2026.1"
-  userIpHash?: string;
+  strictlyNecessary: true;
+  functional: boolean;
+  analytics: boolean;
+  marketing: boolean;
+  consentedAt: string;
+  consentVersion: string;
+  userIpHash: string;
 }
 
 export interface CookieConsentAudit {
@@ -422,6 +423,9 @@ export interface CookieConsentAudit {
   userAgent: string;
   timestamp: string;
 }
+
+// Airwallex Checkout Sessions
+export type AirwallexCheckoutSessionStatus = 'pending' | 'succeeded' | 'failed' | 'expired';
 
 export interface AirwallexCheckoutSession {
   id: string;
@@ -438,7 +442,7 @@ export interface AirwallexCheckoutSession {
   companyName?: string;
   companyVatNumber?: string;
   billingAddress?: string;
-  status: 'pending' | 'succeeded' | 'failed' | 'cancelled';
+  status: AirwallexCheckoutSessionStatus;
   successUrl: string;
   cancelUrl: string;
   createdAt: string;
@@ -449,26 +453,25 @@ export interface AirwallexCheckoutSession {
 }
 
 export interface AirwallexWebhookEvent {
-  id: string;
-  name: 'billing.subscription.created' | 'payment_intent.succeeded' | 'mandate.activated' | 'checkout.session.completed';
-  accountId: string;
-  createdAt: string;
-  data: {
-    object: {
-      id: string;
+  id?: string;
+  name?: string;
+  data?: {
+    object?: {
+      id?: string;
       checkoutSessionId?: string;
-      amount?: number;
-      currency?: string;
-      status: string;
       customerEmail?: string;
       customerName?: string;
-      metadata?: Record<string, any>;
+      amount?: number;
       paymentMethod?: string;
       gatewayRef?: string;
+      metadata?: {
+        itemId?: string;
+        itemType?: string;
+        billingInterval?: string;
+      };
     };
   };
 }
-
 
 
 

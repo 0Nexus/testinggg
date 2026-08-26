@@ -263,34 +263,31 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Enable trust proxy for Cloud Run, GFE, and container ingress
-  app.set('trust proxy', true);
+  // Enable trust proxy for Cloud Run and reverse proxy ingress
+  app.set('trust proxy', 1);
 
   // Initialize and seed Firestore database
   await seedFirestoreIfEmpty();
 
-  // Security Middlewares: CORS, Helmet
+  // Security Middlewares: CORS, Helmet, Rate Limiting
   app.use(cors({ origin: true, credentials: true }));
   app.use(helmet({ contentSecurityPolicy: false }));
 
-  // Scoped API Rate Limiter (Only applies to /api endpoints, never to static assets or SPA views)
-  const apiLimiter = rateLimit({
+  // Global Rate Limiter
+  const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 2000,
+    max: 300,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false, default: false },
-    skip: (req: Request) => req.path === '/health' || req.path.startsWith('/webhooks/'),
     message: { error: 'Too many requests from this IP, please try again later.' }
   });
-  app.use('/api', apiLimiter);
+  app.use(globalLimiter);
 
-  // Auth Rate Limiter
+  // Strict Auth Rate Limiter
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 60,
-    standardHeaders: true,
-    legacyHeaders: false,
+    max: 20,
     validate: { xForwardedForHeader: false, default: false },
     message: { error: 'Too many authentication attempts, please try again in 15 minutes.' }
   });
@@ -1032,8 +1029,12 @@ async function startServer() {
       const customerName = eventData?.customerName || session?.customerName || 'Valued Subscriber';
       const amount = eventData?.amount || session?.amount || 0;
       const itemId = session?.itemId || eventData?.metadata?.itemId || 'journeyman_pro';
-      const itemType = session?.itemType || eventData?.metadata?.itemType || 'plan';
-      const billingInterval = session?.billingInterval || eventData?.metadata?.billingInterval || 'monthly';
+      const validItemTypes = ['plan', 'care_package', 'credits', 'escrow_pass'] as const;
+      const rawItemType = session?.itemType || eventData?.metadata?.itemType || 'plan';
+      const itemType: 'plan' | 'care_package' | 'credits' | 'escrow_pass' =
+        (validItemTypes as readonly string[]).includes(rawItemType) ? (rawItemType as any) : 'plan';
+      const rawBillingInterval = session?.billingInterval || eventData?.metadata?.billingInterval || 'monthly';
+      const billingInterval: 'monthly' | 'annual' = rawBillingInterval === 'annual' ? 'annual' : 'monthly';
       const paymentMethod = eventData?.paymentMethod || session?.paymentMethodUsed || 'Airwallex BACS Direct Debit';
       const gatewayRef = eventData?.gatewayRef || `awx_wh_${Date.now()}`;
 
