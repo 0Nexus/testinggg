@@ -206,9 +206,19 @@ export interface GatewayConfig {
   airwallex: {
     enabled: boolean;
     clientId: string;
+    apiKey?: string;
+    webhookSecret?: string;
     apiKeySet: boolean;
     supportedCurrencies: string[];
     fees: GatewayFeeStructure;
+  };
+  airwallexResolved?: {
+    isConfigured: boolean;
+    env: 'demo' | 'prod';
+    source?: 'env' | 'secret_manager' | 'firestore_gateway_config' | 'none';
+    hasClientId: boolean;
+    hasApiKey: boolean;
+    hasWebhookSecret: boolean;
   };
   mcpMode: 'auto_route' | 'force_stripe' | 'force_airwallex' | 'client_choice';
   mcpDefaultGateway: PaymentGateway;

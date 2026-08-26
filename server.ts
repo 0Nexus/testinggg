@@ -39,6 +39,7 @@ import {
 } from './src/lib/firestoreServer.js';
 import {
   getAirwallexConfig,
+  getResolvedAirwallexConfig,
   createAirwallexPaymentIntent,
   getAirwallexPaymentIntent,
   verifyAirwallexWebhookSignature
@@ -344,9 +345,9 @@ async function startServer() {
       bodyStr = JSON.stringify(bodyObj);
     }
 
-    const config = getAirwallexConfig();
+    const config = await getResolvedAirwallexConfig();
     if (config.webhookSecret) {
-      const verification = verifyAirwallexWebhookSignature(bodyStr, signature, timestamp);
+      const verification = await verifyAirwallexWebhookSignature(bodyStr, signature, timestamp);
       if (!verification.isValid) {
         console.error('[AIRWALLEX WEBHOOK] Signature verification failed:', verification.error);
         return res.status(401).json({ error: verification.error || 'Invalid Airwallex webhook signature.' });
@@ -952,7 +953,7 @@ async function startServer() {
         planName = 'Escrow Pre-Purchase Growth Pass (£25k)';
       }
 
-      const config = getAirwallexConfig();
+      const config = await getResolvedAirwallexConfig();
       if (!config.isConfigured) {
         return res.status(400).json({
           success: false,
@@ -1060,7 +1061,7 @@ async function startServer() {
 
       const session = await getAirwallexSessionFromDB(targetId);
 
-      const config = getAirwallexConfig();
+      const config = await getResolvedAirwallexConfig();
       if (!config.isConfigured) {
         return res.status(400).json({ error: 'Airwallex API credentials not configured.' });
       }
@@ -1146,7 +1147,7 @@ async function startServer() {
   app.post('/api/airwallex/create-subscription-intent', async (req: Request, res: Response) => {
     try {
       const { itemId, itemType, billingInterval, amount, currency = 'GBP', customerEmail, customerName } = req.body;
-      const config = getAirwallexConfig();
+      const config = await getResolvedAirwallexConfig();
       if (!config.isConfigured) {
         return res.status(400).json({
           success: false,
@@ -2108,14 +2109,36 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
 
   app.get('/api/gateways/config', async (req: Request, res: Response) => {
     const cfg = await getGatewayConfigFromDB();
-    res.json(cfg);
+    const airwallexResolved = await getResolvedAirwallexConfig();
+    res.json({
+      ...cfg,
+      airwallexResolved: {
+        isConfigured: airwallexResolved.isConfigured,
+        env: airwallexResolved.env,
+        source: airwallexResolved.source,
+        hasClientId: Boolean(airwallexResolved.clientId),
+        hasApiKey: Boolean(airwallexResolved.apiKey),
+        hasWebhookSecret: Boolean(airwallexResolved.webhookSecret)
+      }
+    });
   });
 
   app.post('/api/gateways/config', authenticateToken, requireRole(['admin', 'inspector']), async (req: Request, res: Response) => {
     const existing = await getGatewayConfigFromDB();
     const updated = { ...existing, ...req.body };
     await saveGatewayConfigToDB(updated);
-    res.json(updated);
+    const airwallexResolved = await getResolvedAirwallexConfig();
+    res.json({
+      ...updated,
+      airwallexResolved: {
+        isConfigured: airwallexResolved.isConfigured,
+        env: airwallexResolved.env,
+        source: airwallexResolved.source,
+        hasClientId: Boolean(airwallexResolved.clientId),
+        hasApiKey: Boolean(airwallexResolved.apiKey),
+        hasWebhookSecret: Boolean(airwallexResolved.webhookSecret)
+      }
+    });
   });
 
   app.post('/api/mcp/evaluate', async (req: Request, res: Response) => {

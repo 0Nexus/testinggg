@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getGatewayConfigFromDB } from './firestoreServer.js';
 
 export interface AirwallexConfig {
   clientId: string;
@@ -7,15 +9,73 @@ export interface AirwallexConfig {
   env: 'demo' | 'prod';
   baseUrl: string;
   isConfigured: boolean;
+  source?: 'env' | 'secret_manager' | 'firestore_gateway_config' | 'none';
 }
 
+let secretManagerClient: SecretManagerServiceClient | null = null;
+function getSecretClient(): SecretManagerServiceClient {
+  if (!secretManagerClient) {
+    secretManagerClient = new SecretManagerServiceClient();
+  }
+  return secretManagerClient;
+}
+
+const secretCache: Record<string, { value: string; fetchedAt: number }> = {};
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Attempt to read a secret from Google Secret Manager if not present in process.env
+ */
+async function fetchSecretFromGCP(secretName: string): Promise<string> {
+  const cached = secretCache[secretName];
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    return cached.value;
+  }
+
+  const projectId =
+    process.env.GCP_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GCLOUD_PROJECT ||
+    '661881715792';
+
+  const client = getSecretClient();
+  const name = `projects/${projectId}/secrets/${secretName}/versions/latest`;
+
+  try {
+    const [version] = await client.accessSecretVersion({ name });
+    const payload = version.payload?.data?.toString();
+    if (payload) {
+      secretCache[secretName] = { value: payload.trim(), fetchedAt: Date.now() };
+      return payload.trim();
+    }
+  } catch (err: any) {
+    // Secret not found or permissions issue - handled gracefully
+  }
+
+  return '';
+}
+
+/**
+ * Synchronous resolver for config (with async background hydrate)
+ */
 export function getAirwallexConfig(): AirwallexConfig {
-  const clientId = (process.env.AIRWALLEX_CLIENT_ID || '').trim();
-  const apiKey = (process.env.AIRWALLEX_API_KEY || '').trim();
-  const webhookSecret = (process.env.AIRWALLEX_WEBHOOK_SECRET || '').trim();
+  let clientId = (process.env.AIRWALLEX_CLIENT_ID || '').trim();
+  let apiKey = (process.env.AIRWALLEX_API_KEY || '').trim();
+  let webhookSecret = (process.env.AIRWALLEX_WEBHOOK_SECRET || '').trim();
+
+  // Fallback to cache from Secret Manager if process.env is empty
+  if (!clientId && secretCache['AIRWALLEX_CLIENT_ID']?.value) {
+    clientId = secretCache['AIRWALLEX_CLIENT_ID'].value;
+  }
+  if (!apiKey && secretCache['AIRWALLEX_API_KEY']?.value) {
+    apiKey = secretCache['AIRWALLEX_API_KEY'].value;
+  }
+  if (!webhookSecret && secretCache['AIRWALLEX_WEBHOOK_SECRET']?.value) {
+    webhookSecret = secretCache['AIRWALLEX_WEBHOOK_SECRET'].value;
+  }
+
   const env: 'demo' | 'prod' = (process.env.AIRWALLEX_ENV || 'demo').toLowerCase() === 'prod' ? 'prod' : 'demo';
   const baseUrl = env === 'prod' ? 'https://api.airwallex.com' : 'https://api-demo.airwallex.com';
-
   const isConfigured = Boolean(clientId && apiKey);
 
   return {
@@ -24,7 +84,68 @@ export function getAirwallexConfig(): AirwallexConfig {
     webhookSecret,
     env,
     baseUrl,
-    isConfigured
+    isConfigured,
+    source: isConfigured ? (process.env.AIRWALLEX_CLIENT_ID ? 'env' : 'secret_manager') : 'none'
+  };
+}
+
+/**
+ * Async resolver for config: checks process.env, then Google Secret Manager, then Firestore Gateway Config
+ */
+export async function getResolvedAirwallexConfig(): Promise<AirwallexConfig> {
+  let clientId = (process.env.AIRWALLEX_CLIENT_ID || '').trim();
+  let apiKey = (process.env.AIRWALLEX_API_KEY || '').trim();
+  let webhookSecret = (process.env.AIRWALLEX_WEBHOOK_SECRET || '').trim();
+  let source: AirwallexConfig['source'] = 'env';
+
+  // 1. Try Google Secret Manager if environment variables are not populated
+  if (!clientId || !apiKey || !webhookSecret) {
+    try {
+      const [smClientId, smApiKey, smWebhookSecret] = await Promise.all([
+        !clientId ? fetchSecretFromGCP('AIRWALLEX_CLIENT_ID') : Promise.resolve(clientId),
+        !apiKey ? fetchSecretFromGCP('AIRWALLEX_API_KEY') : Promise.resolve(apiKey),
+        !webhookSecret ? fetchSecretFromGCP('AIRWALLEX_WEBHOOK_SECRET') : Promise.resolve(webhookSecret)
+      ]);
+
+      if (smClientId) clientId = smClientId;
+      if (smApiKey) apiKey = smApiKey;
+      if (smWebhookSecret) webhookSecret = smWebhookSecret;
+
+      if (smClientId || smApiKey) {
+        source = 'secret_manager';
+      }
+    } catch (e) {
+      console.warn('[AIRWALLEX] Secret Manager lookup error, checking database config');
+    }
+  }
+
+  // 2. Try Firestore Gateway Config as fallback
+  if (!clientId || !apiKey) {
+    try {
+      const gatewayConfig = await getGatewayConfigFromDB();
+      if (gatewayConfig?.airwallex?.clientId && gatewayConfig?.airwallex?.apiKey) {
+        clientId = clientId || gatewayConfig.airwallex.clientId.trim();
+        apiKey = apiKey || gatewayConfig.airwallex.apiKey.trim();
+        webhookSecret = webhookSecret || (gatewayConfig.airwallex.webhookSecret || '').trim();
+        source = 'firestore_gateway_config';
+      }
+    } catch (e) {
+      console.warn('[AIRWALLEX] Gateway Config lookup error');
+    }
+  }
+
+  const env: 'demo' | 'prod' = (process.env.AIRWALLEX_ENV || 'demo').toLowerCase() === 'prod' ? 'prod' : 'demo';
+  const baseUrl = env === 'prod' ? 'https://api.airwallex.com' : 'https://api-demo.airwallex.com';
+  const isConfigured = Boolean(clientId && apiKey);
+
+  return {
+    clientId,
+    apiKey,
+    webhookSecret,
+    env,
+    baseUrl,
+    isConfigured,
+    source
   };
 }
 
@@ -35,7 +156,7 @@ let cachedAuthToken: { token: string; expiresAtMs: number } | null = null;
  * POST /api/v1/authentication/login
  */
 export async function getAirwallexAuthToken(): Promise<string> {
-  const config = getAirwallexConfig();
+  const config = await getResolvedAirwallexConfig();
   if (!config.isConfigured) {
     throw new Error(
       'Airwallex API credentials are not configured. Please set AIRWALLEX_CLIENT_ID and AIRWALLEX_API_KEY in Google Secret Manager or environment variables.'
@@ -49,7 +170,7 @@ export async function getAirwallexAuthToken(): Promise<string> {
   }
 
   const loginUrl = `${config.baseUrl}/api/v1/authentication/login`;
-  console.log(`[AIRWALLEX] Authenticating with ${config.env.toUpperCase()} API: ${loginUrl}`);
+  console.log(`[AIRWALLEX] Authenticating with ${config.env.toUpperCase()} API (${config.source}): ${loginUrl}`);
 
   const res = await fetch(loginUrl, {
     method: 'POST',
@@ -149,7 +270,7 @@ export interface AirwallexPaymentIntent {
 export async function createAirwallexPaymentIntent(
   params: CreatePaymentIntentParams
 ): Promise<AirwallexPaymentIntent> {
-  const config = getAirwallexConfig();
+  const config = await getResolvedAirwallexConfig();
   const token = await getAirwallexAuthToken();
 
   const requestId = crypto.randomUUID();
@@ -193,7 +314,7 @@ export async function createAirwallexPaymentIntent(
  * GET /api/v1/pa/payment_intents/{id}
  */
 export async function getAirwallexPaymentIntent(paymentIntentId: string): Promise<AirwallexPaymentIntent> {
-  const config = getAirwallexConfig();
+  const config = await getResolvedAirwallexConfig();
   const token = await getAirwallexAuthToken();
 
   const getUrl = `${config.baseUrl}/api/v1/pa/payment_intents/${encodeURIComponent(paymentIntentId)}`;
@@ -217,12 +338,12 @@ export async function getAirwallexPaymentIntent(paymentIntentId: string): Promis
 /**
  * Cryptographically verify Airwallex Webhook HMAC-SHA256 signature
  */
-export function verifyAirwallexWebhookSignature(
+export async function verifyAirwallexWebhookSignature(
   rawBodyStr: string,
   signatureHeader: string | undefined,
   timestampHeader: string | undefined
-): { isValid: boolean; error?: string } {
-  const config = getAirwallexConfig();
+): Promise<{ isValid: boolean; error?: string }> {
+  const config = await getResolvedAirwallexConfig();
 
   if (!config.webhookSecret) {
     return {
