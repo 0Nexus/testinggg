@@ -81,6 +81,7 @@ export interface User {
   role: 'contractor' | 'homeowner' | 'inspector' | 'admin';
   createdAt: string;
   phone?: string;
+  emailVerified?: boolean;
   subscription?: UserSubscription;
   contractorProfile?: {
     companyName: string;

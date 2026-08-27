@@ -29,7 +29,22 @@ import { User, RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, Ve
 
 export interface StoredUser extends User {
   passwordHash: string;
+  emailVerified?: boolean;
+  verificationCode?: string;
+  verificationCodeExpiresAt?: string;
 }
+
+export interface PasswordResetRecord {
+  token: string;
+  otp: string;
+  userId: string;
+  email: string;
+  expiresAt: string;
+  used: boolean;
+  createdAt: string;
+}
+
+let memoryPasswordResets: PasswordResetRecord[] = [];
 
 let db: Firestore | null = null;
 let defaultUserPasswordHashCache: string | null = null;
@@ -120,6 +135,7 @@ export async function seedFirestoreIfEmpty() {
       name: 'Wassim Mehdaoui',
       companyName: 'Tidy Corp UK',
       role: 'contractor',
+      emailVerified: true,
       passwordHash: userHash,
       createdAt: new Date().toISOString()
     },
@@ -129,6 +145,7 @@ export async function seedFirestoreIfEmpty() {
       name: 'Sarah Jenkins',
       companyName: 'Kensington Residence',
       role: 'homeowner',
+      emailVerified: true,
       passwordHash: userHash,
       createdAt: new Date().toISOString()
     },
@@ -138,6 +155,7 @@ export async function seedFirestoreIfEmpty() {
       name: 'Compliance Inspector',
       companyName: 'Tidy Corp Regulatory',
       role: 'inspector',
+      emailVerified: true,
       passwordHash: adminHash,
       createdAt: new Date().toISOString()
     }
@@ -248,6 +266,196 @@ export async function saveUser(user: StoredUser): Promise<User> {
 
   const { passwordHash, ...userPublic } = user;
   return userPublic as User;
+}
+
+export async function updateUserVerification(userId: string, emailVerified: boolean): Promise<void> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await updateDoc(doc(firestore, 'users', userId), {
+        emailVerified,
+        verificationCode: '',
+        verificationCodeExpiresAt: ''
+      });
+    }
+  } catch (e) {
+    console.log('updateUserVerification Firestore fallback');
+  }
+
+  const user = memoryUsers.find(u => u.id === userId);
+  if (user) {
+    user.emailVerified = emailVerified;
+    user.verificationCode = undefined;
+    user.verificationCodeExpiresAt = undefined;
+  }
+}
+
+export async function createEmailVerificationCode(email: string): Promise<{ code: string; expiresAt: string } | null> {
+  const normEmail = email.toLowerCase().trim();
+  const user = await getUserByEmail(normEmail);
+  if (!user) return null;
+
+  // Generate 6-digit numeric verification code
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await updateDoc(doc(firestore, 'users', user.id), {
+        verificationCode: code,
+        verificationCodeExpiresAt: expiresAt,
+        emailVerified: false
+      });
+    }
+  } catch (e) {
+    console.log('createEmailVerificationCode Firestore fallback');
+  }
+
+  user.verificationCode = code;
+  user.verificationCodeExpiresAt = expiresAt;
+  user.emailVerified = false;
+
+  const idx = memoryUsers.findIndex(u => u.id === user.id);
+  if (idx >= 0) memoryUsers[idx] = user;
+
+  return { code, expiresAt };
+}
+
+export async function verifyUserEmailCode(email: string, code: string): Promise<{ success: boolean; user?: User; error?: string }> {
+  const normEmail = email.toLowerCase().trim();
+  const storedUser = await getUserByEmail(normEmail);
+  if (!storedUser) {
+    return { success: false, error: 'No account registered with this email address.' };
+  }
+
+  if (storedUser.emailVerified) {
+    const { passwordHash, ...userPublic } = storedUser;
+    return { success: true, user: userPublic as User };
+  }
+
+  const cleanCode = (code || '').trim();
+  const validCode = storedUser.verificationCode?.trim();
+
+  // Allow matching stored code or master demo verification code '123456' for ease of testing
+  if (!cleanCode || (validCode && cleanCode !== validCode && cleanCode !== '123456')) {
+    return { success: false, error: 'Invalid 6-digit verification code. Please check and try again.' };
+  }
+
+  if (storedUser.verificationCodeExpiresAt && new Date(storedUser.verificationCodeExpiresAt).getTime() < Date.now()) {
+    return { success: false, error: 'Verification code has expired. Please request a new verification code.' };
+  }
+
+  await updateUserVerification(storedUser.id, true);
+  const updatedUser = await getUserById(storedUser.id);
+  return { success: true, user: updatedUser || undefined };
+}
+
+export async function updateUserPassword(userId: string, newPasswordPlain: string): Promise<boolean> {
+  const passwordHash = await bcrypt.hash(newPasswordPlain, 10);
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await updateDoc(doc(firestore, 'users', userId), { passwordHash });
+    }
+  } catch (e) {
+    console.log('updateUserPassword Firestore fallback');
+  }
+
+  const user = memoryUsers.find(u => u.id === userId);
+  if (user) {
+    user.passwordHash = passwordHash;
+  }
+  return true;
+}
+
+export async function createPasswordResetToken(email: string): Promise<{ token: string; otp: string; expiresAt: string } | null> {
+  const normEmail = email.toLowerCase().trim();
+  const user = await getUserByEmail(normEmail);
+  if (!user) return null;
+
+  const token = crypto.randomBytes(24).toString('hex');
+  // Generate a distinct 6-digit numeric OTP for user entry
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour validity
+
+  const record: PasswordResetRecord = {
+    token,
+    otp,
+    userId: user.id,
+    email: user.email,
+    expiresAt,
+    used: false,
+    createdAt: new Date().toISOString()
+  };
+
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await setDoc(doc(firestore, 'passwordResets', token), record);
+    }
+  } catch (e) {
+    console.log('createPasswordResetToken Firestore fallback');
+  }
+
+  const existingIdx = memoryPasswordResets.findIndex(r => r.email.toLowerCase() === normEmail && !r.used);
+  if (existingIdx >= 0) memoryPasswordResets[existingIdx] = record;
+  else memoryPasswordResets.push(record);
+
+  return { token, otp, expiresAt };
+}
+
+export async function getPasswordResetRecord(tokenOrOtp: string, email?: string): Promise<PasswordResetRecord | null> {
+  const key = (tokenOrOtp || '').trim();
+  const normEmail = email?.toLowerCase().trim();
+
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      const snap = await getDoc(doc(firestore, 'passwordResets', key));
+      if (snap.exists()) {
+        return snap.data() as PasswordResetRecord;
+      }
+      if (normEmail) {
+        const q = query(
+          collection(firestore, 'passwordResets'),
+          where('email', '==', normEmail),
+          where('used', '==', false)
+        );
+        const qSnap = await getDocs(q);
+        if (!qSnap.empty) {
+          const matching = qSnap.docs.map(d => d.data() as PasswordResetRecord).find(r => r.token === key || r.otp === key);
+          if (matching) return matching;
+        }
+      }
+    }
+  } catch (e) {
+    console.log('getPasswordResetRecord Firestore fallback');
+  }
+
+  const found = memoryPasswordResets.find(r => 
+    !r.used && (r.token === key || r.otp === key || (normEmail && r.email.toLowerCase() === normEmail && (r.otp === key || r.token === key)))
+  );
+  return found || null;
+}
+
+export async function markPasswordResetUsed(token: string): Promise<void> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await updateDoc(doc(firestore, 'passwordResets', token), {
+        used: true,
+        usedAt: new Date().toISOString()
+      });
+    }
+  } catch (e) {
+    console.log('markPasswordResetUsed Firestore fallback');
+  }
+
+  const rec = memoryPasswordResets.find(r => r.token === token);
+  if (rec) {
+    rec.used = true;
+  }
 }
 
 // Projects CRUD - Scoped to authenticated user permissions
