@@ -125,6 +125,32 @@ export const MCPController: React.FC<MCPControllerProps> = ({
                 <span>Direct Debit Fees: 0.3% capped + £0.50 (Save up to 80%)</span>
               </li>
             </ul>
+
+            {/* Gateway Resolution & Secret Manager Diagnostics */}
+            <div className="pt-2 border-t border-cyan-200/60 text-[11px] space-y-1">
+              <div className="flex items-center justify-between text-slate-600">
+                <span className="font-semibold">Credentials Status:</span>
+                {gatewayConfig.airwallexResolved?.isConfigured ? (
+                  <span className="text-emerald-700 font-bold flex items-center space-x-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 inline-block"></span>
+                    <span>Ready ({gatewayConfig.airwallexResolved.source || 'env'})</span>
+                  </span>
+                ) : (
+                  <span className="text-amber-700 font-bold flex items-center space-x-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500 inline-block"></span>
+                    <span>{gatewayConfig.airwallexResolved?.diagnostics?.reasonCategory?.replace(/_/g, ' ') || 'Unconfigured'}</span>
+                  </span>
+                )}
+              </div>
+              {gatewayConfig.airwallexResolved?.diagnostics?.gcpProjectId && (
+                <div className="flex items-center justify-between text-slate-500 font-mono text-[10px]">
+                  <span>GCP Project:</span>
+                  <span className="truncate max-w-[140px]" title={gatewayConfig.airwallexResolved.diagnostics.gcpProjectId}>
+                    {gatewayConfig.airwallexResolved.diagnostics.gcpProjectId} ({gatewayConfig.airwallexResolved.diagnostics.projectResolutionMethod})
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

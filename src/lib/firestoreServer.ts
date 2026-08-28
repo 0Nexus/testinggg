@@ -337,8 +337,8 @@ export async function verifyUserEmailCode(email: string, code: string): Promise<
   const cleanCode = (code || '').trim();
   const validCode = storedUser.verificationCode?.trim();
 
-  // Allow matching stored code or master demo verification code '123456' for ease of testing
-  if (!cleanCode || (validCode && cleanCode !== validCode && cleanCode !== '123456')) {
+  // Strict check: verification code must be present and match the generated code
+  if (!cleanCode || !validCode || cleanCode !== validCode) {
     return { success: false, error: 'Invalid 6-digit verification code. Please check and try again.' };
   }
 
@@ -346,6 +346,7 @@ export async function verifyUserEmailCode(email: string, code: string): Promise<
     return { success: false, error: 'Verification code has expired. Please request a new verification code.' };
   }
 
+  // Mark user as verified and clear the one-time code to prevent replay
   await updateUserVerification(storedUser.id, true);
   const updatedUser = await getUserById(storedUser.id);
   return { success: true, user: updatedUser || undefined };

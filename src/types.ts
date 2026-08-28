@@ -220,6 +220,19 @@ export interface GatewayConfig {
     hasClientId: boolean;
     hasApiKey: boolean;
     hasWebhookSecret: boolean;
+    diagnostics?: {
+      gcpProjectId: string | null;
+      projectResolutionMethod: 'env_var' | 'client_auto_detected' | 'unresolved';
+      statusMessage: string;
+      reasonCategory:
+        | 'configured'
+        | 'secrets_not_found'
+        | 'permission_denied'
+        | 'api_disabled'
+        | 'gcp_project_unresolved'
+        | 'missing_required_fields'
+        | 'not_configured';
+    };
   };
   mcpMode: 'auto_route' | 'force_stripe' | 'force_airwallex' | 'client_choice';
   mcpDefaultGateway: PaymentGateway;

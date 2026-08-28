@@ -2,6 +2,29 @@ import crypto from 'crypto';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getGatewayConfigFromDB } from './firestoreServer.js';
 
+export interface SecretDiagnostic {
+  secretName: string;
+  projectId: string | null;
+  status: 'found' | 'not_found' | 'permission_denied' | 'api_disabled' | 'unauthenticated' | 'project_unresolved' | 'error';
+  errorCode?: string | number;
+  errorMessage?: string;
+}
+
+export interface AirwallexDiagnostics {
+  gcpProjectId: string | null;
+  projectResolutionMethod: 'env_var' | 'client_auto_detected' | 'unresolved';
+  secretManagerAttempts: Record<string, SecretDiagnostic>;
+  statusMessage: string;
+  reasonCategory:
+    | 'configured'
+    | 'secrets_not_found'
+    | 'permission_denied'
+    | 'api_disabled'
+    | 'gcp_project_unresolved'
+    | 'missing_required_fields'
+    | 'not_configured';
+}
+
 export interface AirwallexConfig {
   clientId: string;
   apiKey: string;
@@ -10,6 +33,7 @@ export interface AirwallexConfig {
   baseUrl: string;
   isConfigured: boolean;
   source?: 'env' | 'secret_manager' | 'firestore_gateway_config' | 'none';
+  diagnostics?: AirwallexDiagnostics;
 }
 
 let secretManagerClient: SecretManagerServiceClient | null = null;
@@ -20,23 +44,84 @@ function getSecretClient(): SecretManagerServiceClient {
   return secretManagerClient;
 }
 
+let cachedGcpProjectId: string | null = null;
+
+/**
+ * Resolves the GCP Project ID:
+ * 1. Checks environment variables (GCP_PROJECT, GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT)
+ * 2. If absent, uses the Google Cloud client library default resolution (@google-cloud/secret-manager / google-auth-library)
+ */
+export async function getGcpProjectId(): Promise<{ projectId: string | null; method: 'env_var' | 'client_auto_detected' | 'unresolved' }> {
+  if (cachedGcpProjectId) {
+    return { projectId: cachedGcpProjectId, method: 'client_auto_detected' };
+  }
+
+  const envProject =
+    process.env.GCP_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GCLOUD_PROJECT;
+
+  if (envProject && envProject.trim()) {
+    cachedGcpProjectId = envProject.trim();
+    return { projectId: cachedGcpProjectId, method: 'env_var' };
+  }
+
+  try {
+    const client = getSecretClient();
+    const autoProject = await client.getProjectId();
+    if (autoProject && typeof autoProject === 'string' && autoProject.trim()) {
+      cachedGcpProjectId = autoProject.trim();
+      return { projectId: cachedGcpProjectId, method: 'client_auto_detected' };
+    }
+  } catch (err: any) {
+    console.warn('[SECRET MANAGER] Could not auto-detect GCP project ID via Google Cloud default credentials resolution:', err?.message || err);
+  }
+
+  return { projectId: null, method: 'unresolved' };
+}
+
 const secretCache: Record<string, { value: string; fetchedAt: number }> = {};
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
- * Attempt to read a secret from Google Secret Manager if not present in process.env
+ * Result of fetching a secret from GCP Secret Manager with full diagnostics
  */
-async function fetchSecretFromGCP(secretName: string): Promise<string> {
+export interface SecretFetchResult {
+  value: string;
+  diagnostic: SecretDiagnostic;
+}
+
+/**
+ * Attempt to read a secret from Google Secret Manager with robust error classification and logging.
+ */
+export async function fetchSecretFromGCP(secretName: string): Promise<SecretFetchResult> {
   const cached = secretCache[secretName];
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.value;
+    return {
+      value: cached.value,
+      diagnostic: {
+        secretName,
+        projectId: cachedGcpProjectId,
+        status: 'found'
+      }
+    };
   }
 
-  const projectId =
-    process.env.GCP_PROJECT ||
-    process.env.GOOGLE_CLOUD_PROJECT ||
-    process.env.GCLOUD_PROJECT ||
-    '661881715792';
+  const { projectId, method: projectMethod } = await getGcpProjectId();
+
+  if (!projectId) {
+    const diagnostic: SecretDiagnostic = {
+      secretName,
+      projectId: null,
+      status: 'project_unresolved',
+      errorMessage: 'GCP project ID could not be resolved (no env var and client auto-detection failed).'
+    };
+    console.error(
+      `[SECRET MANAGER RESOLUTION ERROR] Cannot fetch secret '${secretName}': No GCP project ID available. ` +
+      `Environment variables (GCP_PROJECT, GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT) are not set and Google Cloud client library could not auto-resolve project ID.`
+    );
+    return { value: '', diagnostic };
+  }
 
   const client = getSecretClient();
   const name = `projects/${projectId}/secrets/${secretName}/versions/latest`;
@@ -45,14 +130,88 @@ async function fetchSecretFromGCP(secretName: string): Promise<string> {
     const [version] = await client.accessSecretVersion({ name });
     const payload = version.payload?.data?.toString();
     if (payload) {
-      secretCache[secretName] = { value: payload.trim(), fetchedAt: Date.now() };
-      return payload.trim();
+      const trimmed = payload.trim();
+      secretCache[secretName] = { value: trimmed, fetchedAt: Date.now() };
+      return {
+        value: trimmed,
+        diagnostic: {
+          secretName,
+          projectId,
+          status: 'found'
+        }
+      };
     }
+    const diagnostic: SecretDiagnostic = {
+      secretName,
+      projectId,
+      status: 'not_found',
+      errorMessage: 'Secret payload was empty.'
+    };
+    return { value: '', diagnostic };
   } catch (err: any) {
-    // Secret not found or permissions issue - handled gracefully
-  }
+    const errCode = err.code || err.status;
+    const errMsg = String(err.message || err);
+    const errDetails = String(err.details || '');
 
-  return '';
+    // Classify error based on gRPC status code and error messages
+    let statusCategory: SecretDiagnostic['status'] = 'error';
+
+    if (errCode === 5 || errCode === 404 || errMsg.includes('NOT_FOUND') || errMsg.includes('not found')) {
+      statusCategory = 'not_found';
+      console.error(
+        `[SECRET MANAGER NOT FOUND] Secret '${secretName}' does not exist or has no latest version in GCP project '${projectId}'. ` +
+        `[Code: ${errCode || 404}] Details: ${errMsg}`
+      );
+    } else if (
+      errCode === 7 ||
+      errCode === 403 ||
+      errMsg.includes('PERMISSION_DENIED') ||
+      errMsg.includes('Permission denied') ||
+      errMsg.includes('does not have secretmanager.secrets.get')
+    ) {
+      statusCategory = 'permission_denied';
+      console.error(
+        `[SECRET MANAGER PERMISSION DENIED] Access denied fetching secret '${secretName}' from GCP project '${projectId}'. ` +
+        `The Cloud Run runtime service account requires the 'roles/secretmanager.secretAccessor' IAM role. ` +
+        `[Code: ${errCode || 403}] Details: ${errMsg}`
+      );
+    } else if (
+      errCode === 9 ||
+      errMsg.includes('FAILED_PRECONDITION') ||
+      errMsg.includes('has not been used') ||
+      errMsg.includes('is not enabled') ||
+      errMsg.includes('SERVICE_DISABLED')
+    ) {
+      statusCategory = 'api_disabled';
+      console.error(
+        `[SECRET MANAGER API DISABLED] Secret Manager API is not enabled for GCP project '${projectId}'. ` +
+        `Enable 'secretmanager.googleapis.com' in the Google Cloud Console. ` +
+        `[Code: ${errCode || 9}] Details: ${errMsg}`
+      );
+    } else if (errCode === 16 || errCode === 401 || errMsg.includes('UNAUTHENTICATED')) {
+      statusCategory = 'unauthenticated';
+      console.error(
+        `[SECRET MANAGER AUTH ERROR] Unauthenticated request while fetching secret '${secretName}' from GCP project '${projectId}'. ` +
+        `[Code: ${errCode || 401}] Details: ${errMsg}`
+      );
+    } else {
+      statusCategory = 'error';
+      console.error(
+        `[SECRET MANAGER UNEXPECTED ERROR] Failed to fetch secret '${secretName}' from GCP project '${projectId}' (Resolution: ${projectMethod}): ` +
+        `[Code: ${errCode || 'UNKNOWN'}] Details: ${errMsg} ${errDetails ? `| Details: ${errDetails}` : ''}`
+      );
+    }
+
+    const diagnostic: SecretDiagnostic = {
+      secretName,
+      projectId,
+      status: statusCategory,
+      errorCode: errCode,
+      errorMessage: errMsg
+    };
+
+    return { value: '', diagnostic };
+  }
 }
 
 /**
@@ -90,32 +249,39 @@ export function getAirwallexConfig(): AirwallexConfig {
 }
 
 /**
- * Async resolver for config: checks process.env, then Google Secret Manager, then Firestore Gateway Config
+ * Async resolver for config: checks process.env, then Google Secret Manager (with auto-detected project ID and full logging), then Firestore Gateway Config
  */
 export async function getResolvedAirwallexConfig(): Promise<AirwallexConfig> {
   let clientId = (process.env.AIRWALLEX_CLIENT_ID || '').trim();
   let apiKey = (process.env.AIRWALLEX_API_KEY || '').trim();
   let webhookSecret = (process.env.AIRWALLEX_WEBHOOK_SECRET || '').trim();
-  let source: AirwallexConfig['source'] = 'env';
+  let source: AirwallexConfig['source'] = clientId && apiKey ? 'env' : 'none';
+
+  const { projectId, method: projectMethod } = await getGcpProjectId();
+  const secretAttempts: Record<string, SecretDiagnostic> = {};
 
   // 1. Try Google Secret Manager if environment variables are not populated
   if (!clientId || !apiKey || !webhookSecret) {
     try {
-      const [smClientId, smApiKey, smWebhookSecret] = await Promise.all([
-        !clientId ? fetchSecretFromGCP('AIRWALLEX_CLIENT_ID') : Promise.resolve(clientId),
-        !apiKey ? fetchSecretFromGCP('AIRWALLEX_API_KEY') : Promise.resolve(apiKey),
-        !webhookSecret ? fetchSecretFromGCP('AIRWALLEX_WEBHOOK_SECRET') : Promise.resolve(webhookSecret)
+      const [clientRes, apiRes, webhookRes] = await Promise.all([
+        !clientId ? fetchSecretFromGCP('AIRWALLEX_CLIENT_ID') : Promise.resolve({ value: clientId, diagnostic: { secretName: 'AIRWALLEX_CLIENT_ID', projectId, status: 'found' as const } }),
+        !apiKey ? fetchSecretFromGCP('AIRWALLEX_API_KEY') : Promise.resolve({ value: apiKey, diagnostic: { secretName: 'AIRWALLEX_API_KEY', projectId, status: 'found' as const } }),
+        !webhookSecret ? fetchSecretFromGCP('AIRWALLEX_WEBHOOK_SECRET') : Promise.resolve({ value: webhookSecret, diagnostic: { secretName: 'AIRWALLEX_WEBHOOK_SECRET', projectId, status: 'found' as const } })
       ]);
 
-      if (smClientId) clientId = smClientId;
-      if (smApiKey) apiKey = smApiKey;
-      if (smWebhookSecret) webhookSecret = smWebhookSecret;
+      secretAttempts['AIRWALLEX_CLIENT_ID'] = clientRes.diagnostic;
+      secretAttempts['AIRWALLEX_API_KEY'] = apiRes.diagnostic;
+      secretAttempts['AIRWALLEX_WEBHOOK_SECRET'] = webhookRes.diagnostic;
 
-      if (smClientId || smApiKey) {
+      if (!clientId && clientRes.value) clientId = clientRes.value;
+      if (!apiKey && apiRes.value) apiKey = apiRes.value;
+      if (!webhookSecret && webhookRes.value) webhookSecret = webhookRes.value;
+
+      if (clientRes.value || apiRes.value) {
         source = 'secret_manager';
       }
-    } catch (e) {
-      console.warn('[AIRWALLEX] Secret Manager lookup error, checking database config');
+    } catch (e: any) {
+      console.error('[AIRWALLEX] Unexpected error during Secret Manager lookup:', e?.message || e);
     }
   }
 
@@ -129,14 +295,54 @@ export async function getResolvedAirwallexConfig(): Promise<AirwallexConfig> {
         webhookSecret = webhookSecret || (gatewayConfig.airwallex.webhookSecret || '').trim();
         source = 'firestore_gateway_config';
       }
-    } catch (e) {
-      console.warn('[AIRWALLEX] Gateway Config lookup error');
+    } catch (e: any) {
+      console.warn('[AIRWALLEX] Gateway Config lookup note:', e?.message || e);
     }
   }
 
   const env: 'demo' | 'prod' = (process.env.AIRWALLEX_ENV || 'demo').toLowerCase() === 'prod' ? 'prod' : 'demo';
   const baseUrl = env === 'prod' ? 'https://api.airwallex.com' : 'https://api-demo.airwallex.com';
   const isConfigured = Boolean(clientId && apiKey);
+
+  // Compute clear diagnostics and human-readable explanation
+  let reasonCategory: AirwallexDiagnostics['reasonCategory'] = 'not_configured';
+  let statusMessage = '';
+
+  if (isConfigured) {
+    reasonCategory = 'configured';
+    statusMessage = `Credentials successfully loaded from ${source} (${env.toUpperCase()} environment).`;
+  } else {
+    // Check if there was a permission denied error
+    const hasPermDenied = Object.values(secretAttempts).some(a => a.status === 'permission_denied');
+    const hasApiDisabled = Object.values(secretAttempts).some(a => a.status === 'api_disabled');
+    const hasProjectUnresolved = projectMethod === 'unresolved' || Object.values(secretAttempts).some(a => a.status === 'project_unresolved');
+    const hasNotFound = Object.values(secretAttempts).some(a => a.status === 'not_found');
+
+    if (hasPermDenied) {
+      reasonCategory = 'permission_denied';
+      statusMessage = `Access denied (403 Permission Denied) reading Secret Manager in GCP project '${projectId}'. Ensure Cloud Run service account has 'roles/secretmanager.secretAccessor'.`;
+    } else if (hasApiDisabled) {
+      reasonCategory = 'api_disabled';
+      statusMessage = `Secret Manager API (secretmanager.googleapis.com) is disabled in GCP project '${projectId}'. Please enable it in the GCP Console.`;
+    } else if (hasProjectUnresolved) {
+      reasonCategory = 'gcp_project_unresolved';
+      statusMessage = 'GCP Project ID could not be resolved from environment variables or Google Cloud runtime metadata.';
+    } else if (hasNotFound) {
+      reasonCategory = 'secrets_not_found';
+      statusMessage = `Secrets AIRWALLEX_CLIENT_ID and/or AIRWALLEX_API_KEY were not found in GCP project '${projectId}' Secret Manager.`;
+    } else {
+      reasonCategory = 'not_configured';
+      statusMessage = 'Airwallex credentials are not configured in environment variables, Secret Manager, or Gateway settings.';
+    }
+  }
+
+  const diagnostics: AirwallexDiagnostics = {
+    gcpProjectId: projectId,
+    projectResolutionMethod: projectMethod,
+    secretManagerAttempts: secretAttempts,
+    statusMessage,
+    reasonCategory
+  };
 
   return {
     clientId,
@@ -145,7 +351,8 @@ export async function getResolvedAirwallexConfig(): Promise<AirwallexConfig> {
     env,
     baseUrl,
     isConfigured,
-    source
+    source,
+    diagnostics
   };
 }
 

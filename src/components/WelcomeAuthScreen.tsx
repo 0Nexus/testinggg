@@ -54,7 +54,6 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
   // Email Confirmation State
   const [verificationEmail, setVerificationEmail] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
-  const [latestServerCode, setLatestServerCode] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
 
   // Forgot Password State
@@ -65,7 +64,6 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
-  const [latestResetOtp, setLatestResetOtp] = useState<string | null>(null);
 
   // Clear messages on mode switch
   const switchMode = (newMode: 'login' | 'register' | 'verify_email' | 'forgot_password') => {
@@ -111,10 +109,7 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
         // If account is unverified, navigate immediately to verification screen
         if (data.requiresVerification) {
           setVerificationEmail(data.email || email);
-          if (data.verificationCode) {
-            setLatestServerCode(data.verificationCode);
-            setVerificationCode(data.verificationCode);
-          }
+          setVerificationCode('');
           setAuthMode('verify_email');
           setError(data.message || data.error || 'Please confirm your email address to access your account.');
           return;
@@ -125,11 +120,8 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
       // Handle Registration Success -> Mandatory Email Confirmation
       if (authMode === 'register' && data.requiresVerification) {
         setVerificationEmail(data.email || email);
-        if (data.verificationCode) {
-          setLatestServerCode(data.verificationCode);
-          setVerificationCode(data.verificationCode);
-        }
-        setSuccessMessage(data.message || 'Account created! Please confirm your email address.');
+        setVerificationCode('');
+        setSuccessMessage(data.message || `Account created! A confirmation code has been sent to ${data.email || email}.`);
         setAuthMode('verify_email');
         return;
       }
@@ -213,11 +205,8 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
         throw new Error(data.error || 'Failed to resend confirmation code.');
       }
 
-      if (data.verificationCode) {
-        setLatestServerCode(data.verificationCode);
-        setVerificationCode(data.verificationCode);
-      }
-      setSuccessMessage(data.message || 'A new 6-digit confirmation code has been generated.');
+      setVerificationCode('');
+      setSuccessMessage(data.message || `A new 6-digit confirmation code has been sent to ${targetEmail}.`);
     } catch (err: any) {
       setError(err.message || 'Error resending code.');
     } finally {
@@ -250,15 +239,8 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
         throw new Error(data.error || 'Failed to process password recovery request.');
       }
 
-      if (data.otp) {
-        setLatestResetOtp(data.otp);
-        setResetCode(data.otp);
-      }
-      if (data.token) {
-        setResetToken(data.token);
-      }
-
-      setSuccessMessage(data.message || 'Password reset instructions generated.');
+      setResetCode('');
+      setSuccessMessage(data.message || 'Password reset recovery code has been sent to your email.');
       setForgotStep('reset');
     } catch (err: any) {
       setError(err.message || 'Error requesting password reset.');
@@ -526,30 +508,9 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
                     </div>
                     <h3 className="text-base font-black text-white">Confirm Your Email Address</h3>
                     <p className="text-xs text-slate-300 leading-relaxed">
-                      A 6-digit confirmation code was generated for <span className="text-cyan-400 font-bold font-mono">{verificationEmail || email}</span>. You must verify your email before accessing the portal.
+                      A 6-digit confirmation code was sent to <span className="text-cyan-400 font-bold font-mono">{verificationEmail || email}</span>. Please check your inbox and spam folder.
                     </p>
                   </div>
-
-                  {/* Sandbox / Preview Assistant Box */}
-                  {latestServerCode && (
-                    <div className="p-3 bg-cyan-950/40 border border-cyan-800/60 rounded-2xl flex items-center justify-between">
-                      <div className="text-left">
-                        <span className="text-[10px] uppercase font-bold text-cyan-400 block font-mono">
-                          Verification Code:
-                        </span>
-                        <span className="text-base font-mono font-black text-white tracking-widest">
-                          {latestServerCode}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setVerificationCode(latestServerCode)}
-                        className="px-2.5 py-1.5 bg-cyan-800/60 hover:bg-cyan-700 text-cyan-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                      >
-                        Auto-Fill
-                      </button>
-                    </div>
-                  )}
 
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">
@@ -585,7 +546,7 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
                   </button>
 
                   <div className="flex items-center justify-between pt-2 text-xs text-slate-400">
-                    <span>Didn't receive the code?</span>
+                    <span>Didn't receive the email?</span>
                     <button
                       type="button"
                       disabled={isResending}
@@ -660,29 +621,9 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
                         </div>
                         <h3 className="text-base font-black text-white">Create New Password</h3>
                         <p className="text-xs text-slate-300 leading-relaxed">
-                          Enter the 6-digit recovery code and choose a new password.
+                          Enter the 6-digit recovery code sent to your email and choose a new password.
                         </p>
                       </div>
-
-                      {latestResetOtp && (
-                        <div className="p-3 bg-cyan-950/40 border border-cyan-800/60 rounded-2xl flex items-center justify-between">
-                          <div className="text-left">
-                            <span className="text-[10px] uppercase font-bold text-cyan-400 block font-mono">
-                              Recovery Code:
-                            </span>
-                            <span className="text-base font-mono font-black text-white tracking-widest">
-                              {latestResetOtp}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setResetCode(latestResetOtp)}
-                            className="px-2.5 py-1.5 bg-cyan-800/60 hover:bg-cyan-700 text-cyan-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                          >
-                            Auto-Fill
-                          </button>
-                        </div>
-                      )}
 
                       <div>
                         <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">

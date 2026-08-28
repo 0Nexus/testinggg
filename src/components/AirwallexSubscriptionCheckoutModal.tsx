@@ -95,7 +95,7 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [configNotice, setConfigNotice] = useState<string | null>(null);
+  const [configNotice, setConfigNotice] = useState<{ message: string; reasonCategory?: string; gcpProjectId?: string } | null>(null);
   const [settledReceipt, setSettledReceipt] = useState<any>(null);
   const [activeSession, setActiveSession] = useState<{
     id: string;
@@ -227,8 +227,12 @@ export const AirwallexSubscriptionCheckoutModal: React.FC<AirwallexSubscriptionC
           if (!isMounted) return;
 
           if (!res.ok || !data.success) {
-            if (data.configured === false || (data.error && data.error.includes('credentials are not configured'))) {
-              setConfigNotice(data.error);
+            if (data.configured === false || (data.error && (data.error.includes('credentials') || data.error.includes('could not be loaded') || data.error.includes('not configured')))) {
+              setConfigNotice({
+                message: data.error || 'Airwallex API credentials are not configured.',
+                reasonCategory: data.reasonCategory,
+                gcpProjectId: data.gcpProjectId || data.diagnostics?.gcpProjectId
+              });
             } else {
               setErrorMessage(data.error || 'Failed to initialize Airwallex checkout session');
             }
@@ -492,15 +496,37 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
           </div>
         </div>
 
-        {/* Credentials Notice if not configured */}
+        {/* Credentials Notice with Specific Diagnostic Reason */}
         {configNotice && (
-          <div className="bg-amber-950/70 border-b border-amber-800/80 p-4 text-amber-200 text-xs flex items-start space-x-3">
+          <div className="bg-amber-950/80 border-b border-amber-800 p-4 text-amber-200 text-xs flex items-start space-x-3">
             <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <strong className="font-bold text-white block">Airwallex API Credentials Required</strong>
-              <p className="mt-0.5 text-amber-300/90 leading-relaxed">
-                To connect to live or demo Airwallex processing, configure <code className="bg-amber-900/60 px-1 py-0.5 rounded font-mono text-amber-100">AIRWALLEX_CLIENT_ID</code> and <code className="bg-amber-900/60 px-1 py-0.5 rounded font-mono text-amber-100">AIRWALLEX_API_KEY</code> in Google Secret Manager or server environment variables.
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <strong className="font-bold text-white">Airwallex API Credentials Required</strong>
+                {configNotice.reasonCategory && (
+                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-900/80 text-amber-300 border border-amber-700/60">
+                    {configNotice.reasonCategory.replace(/_/g, ' ')}
+                  </span>
+                )}
+              </div>
+              <p className="text-amber-300/90 leading-relaxed font-mono text-[11px]">
+                {configNotice.message}
               </p>
+              {configNotice.reasonCategory === 'permission_denied' && (
+                <div className="mt-2 text-xs bg-amber-900/50 p-2.5 rounded border border-amber-700/50 text-amber-100">
+                  <strong>Action Required:</strong> Grant the <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">roles/secretmanager.secretAccessor</code> IAM role to the Cloud Run service account in GCP project <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">{configNotice.gcpProjectId || 'current'}</code>.
+                </div>
+              )}
+              {configNotice.reasonCategory === 'secrets_not_found' && (
+                <div className="mt-2 text-xs bg-amber-900/50 p-2.5 rounded border border-amber-700/50 text-amber-100">
+                  <strong>Action Required:</strong> Add secrets <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">AIRWALLEX_CLIENT_ID</code> and <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">AIRWALLEX_API_KEY</code> to GCP Secret Manager in project <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">{configNotice.gcpProjectId || 'current'}</code>.
+                </div>
+              )}
+              {configNotice.reasonCategory === 'api_disabled' && (
+                <div className="mt-2 text-xs bg-amber-900/50 p-2.5 rounded border border-amber-700/50 text-amber-100">
+                  <strong>Action Required:</strong> Enable the <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">secretmanager.googleapis.com</code> API in Google Cloud Console for project <code className="bg-black/40 px-1 py-0.5 rounded text-amber-300">{configNotice.gcpProjectId || 'current'}</code>.
+                </div>
+              )}
             </div>
           </div>
         )}

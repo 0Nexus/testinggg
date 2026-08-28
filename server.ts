@@ -52,6 +52,12 @@ import {
   verifyAirwallexWebhookSignature
 } from './src/lib/airwallexServer.js';
 import {
+  sendRegistrationVerificationEmail,
+  sendResendVerificationEmail,
+  sendPasswordResetEmail,
+  getResolvedEmailConfig
+} from './src/lib/emailServer.js';
+import {
   RenovationProject,
   MCPRule,
   GatewayConfig,
@@ -568,9 +574,25 @@ async function startServer() {
     }
   });
 
-  // --- AUTHENTICATION ROUTES (JWT & Bcrypt with Email Verification & Password Recovery) ---
+  // --- AUTHENTICATION ROUTES (JWT & Bcrypt with Real Transactional Email Verification) ---
 
-  // Register New User - Requires Email Confirmation before Portal Access
+  // Email Config Diagnostics Endpoint
+  app.get('/api/auth/email-config-status', async (req: Request, res: Response) => {
+    try {
+      const emailConfig = await getResolvedEmailConfig();
+      res.json({
+        isConfigured: emailConfig.isConfigured,
+        provider: emailConfig.provider,
+        fromEmail: emailConfig.fromEmail,
+        source: emailConfig.source,
+        diagnostics: emailConfig.diagnostics
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Failed to resolve email provider configuration' });
+    }
+  });
+
+  // Register New User - Dispatches Real Email Confirmation Code before Portal Access
   app.post('/api/auth/register', authLimiter, async (req: Request, res: Response) => {
     const validationErr = validateRegisterInput(req.body);
     if (validationErr) {
@@ -628,17 +650,28 @@ async function startServer() {
       await saveContractorToDB(newVettedContractor);
     }
 
+    // Attempt to deliver the verification code via transactional email
+    const emailResult = await sendRegistrationVerificationEmail(normalizedEmail, name, verificationCode);
+    if (!emailResult.success) {
+      console.error(`[AUTH REGISTRATION ERROR] Email delivery failed for ${normalizedEmail}:`, emailResult.error);
+      return res.status(502).json({
+        error: `Could not send verification email: ${emailResult.error || 'Transactional email delivery failed'}. Please verify email settings or contact support.`,
+        emailDeliveryFailed: true,
+        provider: emailResult.provider
+      });
+    }
+
+    // Save user only after email dispatch succeeded
     await saveUser(newUser);
 
-    console.log(`[AUTH] User registered: ${normalizedEmail}. Verification code: ${verificationCode}`);
+    console.log(`[AUTH] User registered: ${normalizedEmail}. Verification email sent via ${emailResult.provider}.`);
 
-    // Return prompt for 6-digit email confirmation - do NOT log in yet
+    // Return prompt for 6-digit email confirmation - NEVER return verificationCode to client
     res.status(201).json({
       success: true,
       requiresVerification: true,
       email: normalizedEmail,
-      verificationCode, // Provided for easy sandbox preview testing
-      message: `Account created successfully! A 6-digit confirmation code has been sent to ${normalizedEmail}. Please verify your email before accessing the portal.`
+      message: `Account created successfully! A 6-digit confirmation code has been sent to ${normalizedEmail}. Please check your inbox and enter the code to verify your account.`
     });
   });
 
@@ -710,12 +743,24 @@ async function startServer() {
       }
 
       const verification = await createEmailVerificationCode(email);
-      console.log(`[AUTH] Resent verification code for ${email}: ${verification?.code}`);
+      if (!verification) {
+        return res.status(500).json({ error: 'Could not generate a new verification code.' });
+      }
 
+      const emailResult = await sendResendVerificationEmail(user.email, user.name, verification.code);
+      if (!emailResult.success) {
+        console.error(`[AUTH RESEND ERROR] Failed to send verification email to ${email}:`, emailResult.error);
+        return res.status(502).json({
+          error: `Could not send verification email: ${emailResult.error || 'Transactional email delivery failed'}. Please try again later.`
+        });
+      }
+
+      console.log(`[AUTH] Resent verification code email for ${email} via ${emailResult.provider}`);
+
+      // NEVER return verificationCode to client
       res.json({
         success: true,
-        message: `A new 6-digit confirmation code has been generated for ${email}.`,
-        verificationCode: verification?.code
+        message: `A new 6-digit confirmation code has been sent to ${email}. Please check your inbox.`
       });
     } catch (err: any) {
       console.error('Resend verification error:', err);
@@ -723,7 +768,7 @@ async function startServer() {
     }
   });
 
-  // Login Existing User - Block unverified accounts
+  // Login Existing User - Block unverified accounts and trigger email
   app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
     const validationErr = validateLoginInput(req.body);
     if (validationErr) {
@@ -746,14 +791,17 @@ async function startServer() {
     // Check if email has been verified
     if (storedUser.emailVerified === false) {
       const freshVerification = await createEmailVerificationCode(storedUser.email);
-      console.log(`[AUTH] Blocked unverified login for ${storedUser.email}. Sent code: ${freshVerification?.code}`);
+      if (freshVerification) {
+        await sendResendVerificationEmail(storedUser.email, storedUser.name, freshVerification.code);
+      }
+      console.log(`[AUTH] Blocked unverified login for ${storedUser.email}. Sent new verification code to inbox.`);
 
+      // NEVER return verificationCode to client
       return res.status(403).json({
         error: 'Please confirm your email address before logging in.',
         requiresVerification: true,
         email: storedUser.email,
-        verificationCode: freshVerification?.code,
-        message: `Your email address has not been verified yet. We have generated a 6-digit verification code to confirm your account.`
+        message: `Your email address has not been verified yet. We have sent a 6-digit verification code to ${storedUser.email}. Please check your inbox.`
       });
     }
 
@@ -787,7 +835,7 @@ async function startServer() {
     });
   });
 
-  // Forgot Password: Request OTP / Reset Token
+  // Forgot Password: Send 6-digit Recovery OTP via Real Email
   app.post('/api/auth/forgot-password', authLimiter, async (req: Request, res: Response) => {
     try {
       const { email } = req.body;
@@ -797,22 +845,32 @@ async function startServer() {
 
       const user = await getUserByEmail(email.toLowerCase().trim());
       if (!user) {
+        // Return generic message to prevent email enumeration
         return res.json({
           success: true,
-          message: 'If an account matches this email, reset instructions have been generated.',
-          otp: '849201' // Simulated preview fallback
+          message: 'If an account matches this email, password reset instructions have been sent to your inbox.'
         });
       }
 
       const resetData = await createPasswordResetToken(user.email);
-      console.log(`[AUTH] Password reset requested for ${user.email}. OTP: ${resetData?.otp}, Token: ${resetData?.token}`);
+      if (!resetData) {
+        return res.status(500).json({ error: 'Could not generate password reset request.' });
+      }
 
+      const emailResult = await sendPasswordResetEmail(user.email, user.name, resetData.otp);
+      if (!emailResult.success) {
+        console.error(`[AUTH FORGOT PASSWORD ERROR] Failed to send reset email to ${user.email}:`, emailResult.error);
+        return res.status(502).json({
+          error: `Could not deliver password reset email: ${emailResult.error || 'Transactional email delivery failed'}. Please try again later.`
+        });
+      }
+
+      console.log(`[AUTH] Password reset email sent for ${user.email} via ${emailResult.provider}`);
+
+      // NEVER return otp or token to client
       return res.json({
         success: true,
-        message: `Password reset verification code generated for ${user.email}.`,
-        token: resetData?.token,
-        otp: resetData?.otp,
-        expiresAt: resetData?.expiresAt
+        message: `Password reset instructions with a 6-digit recovery code have been sent to ${user.email}. Please check your inbox.`
       });
     } catch (e: any) {
       console.error('Forgot password error:', e);
@@ -820,7 +878,7 @@ async function startServer() {
     }
   });
 
-  // Reset Password: Apply new password with OTP / Token
+  // Reset Password: Apply new password with verified OTP - strictly validate without bypasses
   app.post('/api/auth/reset-password', authLimiter, async (req: Request, res: Response) => {
     try {
       const { email, code, otp, token, newPassword } = req.body;
@@ -830,30 +888,29 @@ async function startServer() {
       }
 
       const checkKey = (code || otp || token || '').trim();
-      const resetRecord = await getPasswordResetRecord(checkKey, email);
-
-      let userToUpdate: StoredUser | null = null;
-
-      if (resetRecord && !resetRecord.used && new Date(resetRecord.expiresAt).getTime() >= Date.now()) {
-        userToUpdate = await getUserByEmail(resetRecord.email);
-        await markPasswordResetUsed(resetRecord.token);
-      } else if (checkKey === '123456' && email) {
-        // Master developer testing bypass code
-        userToUpdate = await getUserByEmail(email);
-      } else {
-        return res.status(400).json({ error: 'Invalid or expired password reset verification code. Please request a new one.' });
+      if (!checkKey) {
+        return res.status(400).json({ error: '6-digit recovery code is required.' });
       }
 
+      const resetRecord = await getPasswordResetRecord(checkKey, email);
+
+      // Strict validation: must have valid, unexpired, unused reset record
+      if (!resetRecord || resetRecord.used || new Date(resetRecord.expiresAt).getTime() < Date.now()) {
+        return res.status(400).json({ error: 'Invalid or expired password reset recovery code. Please request a new code.' });
+      }
+
+      const userToUpdate = await getUserByEmail(resetRecord.email);
       if (!userToUpdate) {
         return res.status(404).json({ error: 'User account not found.' });
       }
 
+      await markPasswordResetUsed(resetRecord.token);
       await updateUserPassword(userToUpdate.id, newPassword);
       console.log(`[AUTH] Password updated successfully for user ${userToUpdate.email}`);
 
       return res.json({
         success: true,
-        message: 'Your password has been successfully reset. You can now log in.'
+        message: 'Your password has been successfully reset. You can now log in with your new password.'
       });
     } catch (e: any) {
       console.error('Reset password error:', e);
@@ -1119,9 +1176,13 @@ async function startServer() {
 
       const config = await getResolvedAirwallexConfig();
       if (!config.isConfigured) {
+        const diag = config.diagnostics;
         return res.status(400).json({
           success: false,
-          error: 'Airwallex API credentials are not configured. Please set AIRWALLEX_CLIENT_ID and AIRWALLEX_API_KEY in Google Secret Manager or environment variables.',
+          error: `Airwallex API credentials could not be loaded: ${diag?.statusMessage || 'Credentials not configured'}`,
+          reasonCategory: diag?.reasonCategory || 'not_configured',
+          gcpProjectId: diag?.gcpProjectId || null,
+          diagnostics: diag,
           configured: false
         });
       }
@@ -1227,7 +1288,12 @@ async function startServer() {
 
       const config = await getResolvedAirwallexConfig();
       if (!config.isConfigured) {
-        return res.status(400).json({ error: 'Airwallex API credentials not configured.' });
+        const diag = config.diagnostics;
+        return res.status(400).json({
+          error: `Airwallex API credentials could not be loaded: ${diag?.statusMessage || 'Credentials not configured.'}`,
+          reasonCategory: diag?.reasonCategory || 'not_configured',
+          diagnostics: diag
+        });
       }
 
       console.log(`[AIRWALLEX VERIFICATION] Querying Airwallex API for PaymentIntent: ${targetId}`);
@@ -1313,9 +1379,13 @@ async function startServer() {
       const { itemId, itemType, billingInterval, amount, currency = 'GBP', customerEmail, customerName } = req.body;
       const config = await getResolvedAirwallexConfig();
       if (!config.isConfigured) {
+        const diag = config.diagnostics;
         return res.status(400).json({
           success: false,
-          error: 'Airwallex API credentials not configured. Please configure AIRWALLEX_CLIENT_ID and AIRWALLEX_API_KEY.'
+          error: `Airwallex API credentials could not be loaded: ${diag?.statusMessage || 'Credentials not configured.'}`,
+          reasonCategory: diag?.reasonCategory || 'not_configured',
+          gcpProjectId: diag?.gcpProjectId || null,
+          diagnostics: diag
         });
       }
 
@@ -2282,7 +2352,8 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
         source: airwallexResolved.source,
         hasClientId: Boolean(airwallexResolved.clientId),
         hasApiKey: Boolean(airwallexResolved.apiKey),
-        hasWebhookSecret: Boolean(airwallexResolved.webhookSecret)
+        hasWebhookSecret: Boolean(airwallexResolved.webhookSecret),
+        diagnostics: airwallexResolved.diagnostics
       }
     });
   });
@@ -2300,7 +2371,8 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
         source: airwallexResolved.source,
         hasClientId: Boolean(airwallexResolved.clientId),
         hasApiKey: Boolean(airwallexResolved.apiKey),
-        hasWebhookSecret: Boolean(airwallexResolved.webhookSecret)
+        hasWebhookSecret: Boolean(airwallexResolved.webhookSecret),
+        diagnostics: airwallexResolved.diagnostics
       }
     });
   });
