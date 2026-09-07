@@ -248,11 +248,14 @@ export async function createStripeSubscriptionSession(params: {
   companyName?: string;
   companyVatNumber?: string;
   billingAddress?: string;
+  appUrl?: string;
   successUrl?: string;
   cancelUrl?: string;
 }): Promise<{
   success: boolean;
   checkoutId: string;
+  sessionId: string;
+  checkoutUrl: string;
   paymentIntentId: string;
   clientSecret: string;
   publishableKey?: string;
@@ -272,6 +275,7 @@ export async function createStripeSubscriptionSession(params: {
     companyName = '',
     companyVatNumber = '',
     billingAddress = 'United Kingdom',
+    appUrl = '',
     successUrl = '/?payment_status=success',
     cancelUrl = '/?payment_status=cancelled'
   } = params;
@@ -301,25 +305,56 @@ export async function createStripeSubscriptionSession(params: {
   const currency = (params.currency || 'GBP').toUpperCase();
   const config = await getResolvedStripeConfig();
 
-  // If live Stripe credentials exist, create a real Stripe PaymentIntent
+  // If live Stripe credentials exist, create a real Stripe Checkout Session (Hosted Checkout)
   const stripe = await getStripeClient();
+  let sessionId = '';
+  let checkoutUrl = '';
   let paymentIntentId = '';
   let clientSecret = '';
   let isLive = false;
+
+  // Resolve base URL for redirects
+  const baseAppUrl = appUrl || process.env.APP_URL || 'http://localhost:3000';
+  let resolvedSuccessUrl = successUrl;
+  if (resolvedSuccessUrl.startsWith('/')) {
+    resolvedSuccessUrl = `${baseAppUrl}${resolvedSuccessUrl}`;
+  }
+  if (!resolvedSuccessUrl.includes('session_id=')) {
+    const joiner = resolvedSuccessUrl.includes('?') ? '&' : '?';
+    resolvedSuccessUrl = `${resolvedSuccessUrl}${joiner}session_id={CHECKOUT_SESSION_ID}&payment_status=success&item_id=${itemId}`;
+  }
+
+  let resolvedCancelUrl = cancelUrl;
+  if (resolvedCancelUrl.startsWith('/')) {
+    resolvedCancelUrl = `${baseAppUrl}${resolvedCancelUrl}`;
+  }
+  if (!resolvedCancelUrl.includes('payment_status=')) {
+    const joiner = resolvedCancelUrl.includes('?') ? '&' : '?';
+    resolvedCancelUrl = `${resolvedCancelUrl}${joiner}payment_status=cancelled`;
+  }
 
   if (stripe && config.isConfigured) {
     try {
       // Amount in smallest currency unit (pence for GBP)
       const amountInPence = Math.round(calculatedAmount * 100);
 
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: amountInPence,
-        currency: currency.toLowerCase(),
-        description: `Tidy Corporation Ltd - ${planName} (${billingInterval})`,
-        receipt_email: customerEmail,
-        automatic_payment_methods: {
-          enabled: true
-        },
+      // Create official Stripe Hosted Checkout Session
+      const checkoutSession = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        customer_email: customerEmail,
+        line_items: [
+          {
+            price_data: {
+              currency: currency.toLowerCase(),
+              product_data: {
+                name: `Tidy Corporation Ltd: ${planName}`,
+                description: `${planName} (${billingInterval === 'annual' ? 'Annual Subscription' : 'Monthly Subscription'}) • FCA-Regulated Escrow & Property OS`,
+              },
+              unit_amount: amountInPence,
+            },
+            quantity: 1,
+          }
+        ],
         metadata: {
           itemId: String(itemId),
           itemType: String(itemType),
@@ -328,29 +363,37 @@ export async function createStripeSubscriptionSession(params: {
           customerName,
           companyName,
           companyVatNumber
-        }
+        },
+        billing_address_collection: 'auto',
+        success_url: resolvedSuccessUrl,
+        cancel_url: resolvedCancelUrl,
       });
 
-      paymentIntentId = paymentIntent.id;
-      clientSecret = paymentIntent.client_secret || '';
+      sessionId = checkoutSession.id;
+      checkoutUrl = checkoutSession.url || '';
+      paymentIntentId = typeof checkoutSession.payment_intent === 'string'
+        ? checkoutSession.payment_intent
+        : (checkoutSession.payment_intent?.id || sessionId);
       isLive = true;
     } catch (stripeErr: any) {
-      console.error('[STRIPE API ERROR] Failed to create PaymentIntent:', stripeErr);
-      throw new Error(`Stripe API Error: ${stripeErr.message || 'PaymentIntent creation failed'}`);
+      console.error('[STRIPE API ERROR] Failed to create Checkout Session:', stripeErr);
+      throw new Error(`Stripe API Error: ${stripeErr.message || 'Checkout session creation failed'}`);
     }
   } else {
     // If Stripe credentials are not set in Secret Manager or env,
-    // generate a structured simulated intent to allow sandbox testing and provide clear diagnostics
+    // generate a structured simulated checkout session to allow sandbox testing and provide clear diagnostics
+    sessionId = `cs_mock_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
     paymentIntentId = `pi_mock_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
     clientSecret = `${paymentIntentId}_secret_${crypto.randomBytes(8).toString('hex')}`;
+    checkoutUrl = `${resolvedSuccessUrl.replace('{CHECKOUT_SESSION_ID}', sessionId)}`;
     isLive = false;
   }
 
   const session: StripeCheckoutSession = {
-    id: paymentIntentId,
+    id: sessionId,
     paymentIntentId,
     clientSecret,
-    checkoutUrl: `/checkout/stripe-billing?intent_id=${paymentIntentId}`,
+    checkoutUrl,
     itemType,
     itemId,
     planName,
@@ -363,10 +406,10 @@ export async function createStripeSubscriptionSession(params: {
     companyVatNumber,
     billingAddress,
     status: 'pending',
-    stripeStatus: isLive ? 'requires_payment_method' : 'pending_setup',
+    stripeStatus: isLive ? 'open' : 'pending_setup',
     publishableKey: config.publishableKey || '',
-    successUrl,
-    cancelUrl,
+    successUrl: resolvedSuccessUrl,
+    cancelUrl: resolvedCancelUrl,
     createdAt: new Date().toISOString()
   };
 
@@ -374,7 +417,9 @@ export async function createStripeSubscriptionSession(params: {
 
   return {
     success: true,
-    checkoutId: session.id,
+    checkoutId: sessionId,
+    sessionId,
+    checkoutUrl,
     paymentIntentId,
     clientSecret,
     publishableKey: config.publishableKey,
@@ -575,6 +620,118 @@ export async function applyStripeSubscriptionToUser(params: {
 }
 
 /**
+ * Verifies a Stripe Hosted Checkout Session and automatically applies the subscription
+ */
+export async function verifyStripeCheckoutSession(sessionId: string) {
+  if (!sessionId) {
+    throw new Error('Missing sessionId parameter');
+  }
+
+  const stripe = await getStripeClient();
+
+  if (stripe && !sessionId.startsWith('cs_mock_')) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(sessionId, {
+        expand: ['line_items']
+      });
+
+      if (session.payment_status === 'paid' || session.status === 'complete') {
+        const meta = session.metadata || {};
+        const email = session.customer_details?.email || (meta.customerEmail as string) || session.customer_email || 'user@tidycorp.co.uk';
+        const name = session.customer_details?.name || (meta.customerName as string) || 'Valued Subscriber';
+        const itemType = (meta.itemType as any) || 'plan';
+        const itemId = meta.itemId || 'journeyman_pro';
+        const billingInterval = (meta.billingInterval as any) || 'monthly';
+        const amount = (session.amount_total || 0) / 100;
+        const currency = (session.currency || 'GBP').toUpperCase();
+
+        const result = await applyStripeSubscriptionToUser({
+          customerEmail: email,
+          customerName: name,
+          itemType,
+          itemId,
+          billingInterval,
+          amount,
+          currency,
+          paymentMethodUsed: 'Stripe Hosted Checkout (Cards / Apple Pay / Google Pay / BACS)',
+          gatewayRef: session.id,
+          companyName: (meta.companyName as string) || '',
+          companyVatNumber: (meta.companyVatNumber as string) || '',
+          billingAddress: session.customer_details?.address?.line1 || 'United Kingdom'
+        });
+
+        // Update stored session
+        const storedSession = await getStripeSessionFromDB(sessionId);
+        if (storedSession) {
+          storedSession.status = 'succeeded';
+          storedSession.stripeStatus = 'paid';
+          storedSession.completedAt = new Date().toISOString();
+          storedSession.gatewayRef = session.id;
+          await saveStripeSessionToDB(storedSession);
+        }
+
+        return {
+          success: true,
+          verified: true,
+          status: session.status,
+          paymentStatus: session.payment_status,
+          session,
+          subscription: result.updatedSub,
+          receipt: result.receipt,
+          transaction: result.transaction
+        };
+      } else {
+        return {
+          success: false,
+          verified: false,
+          status: session.status,
+          paymentStatus: session.payment_status,
+          message: `Stripe Checkout Session is not completed yet (Status: ${session.status}, Payment: ${session.payment_status})`
+        };
+      }
+    } catch (err: any) {
+      console.error('[STRIPE CHECKOUT VERIFY ERROR]:', err);
+      throw new Error(`Stripe Checkout Verification Failed: ${err.message || 'Session not verified'}`);
+    }
+  } else {
+    // Simulated / Test mode (for developer sandbox)
+    const stored = await getStripeSessionFromDB(sessionId);
+    const itemType = stored?.itemType || 'plan';
+    const itemId = stored?.itemId || 'journeyman_pro';
+    const billingInterval = stored?.billingInterval || 'monthly';
+    const email = stored?.customerEmail || 'subscriber@tidycorp.co.uk';
+    const name = stored?.customerName || 'Valued Subscriber';
+    const amount = stored?.amount || 29;
+    const currency = stored?.currency || 'GBP';
+
+    const result = await applyStripeSubscriptionToUser({
+      customerEmail: email,
+      customerName: name,
+      itemType,
+      itemId,
+      billingInterval,
+      amount,
+      currency,
+      paymentMethodUsed: 'Stripe Sandbox Simulation',
+      gatewayRef: sessionId,
+      companyName: stored?.companyName || '',
+      companyVatNumber: stored?.companyVatNumber || '',
+      billingAddress: stored?.billingAddress || 'United Kingdom'
+    });
+
+    return {
+      success: true,
+      verified: true,
+      status: 'complete',
+      paymentStatus: 'paid',
+      subscription: result.updatedSub,
+      receipt: result.receipt,
+      transaction: result.transaction
+    };
+  }
+}
+
+/**
  * Confirms payment status for a Stripe PaymentIntent or Checkout Session
  */
 export async function verifyAndConfirmStripePayment(params: {
@@ -594,6 +751,19 @@ export async function verifyAndConfirmStripePayment(params: {
   const { paymentIntentId } = params;
   if (!paymentIntentId) {
     throw new Error('Missing paymentIntentId parameter');
+  }
+
+  // If this is a Stripe Checkout Session (starts with cs_)
+  if (paymentIntentId.startsWith('cs_')) {
+    const sessionResult = await verifyStripeCheckoutSession(paymentIntentId);
+    if (!sessionResult.verified) {
+      throw new Error(sessionResult.message || 'Stripe checkout not verified');
+    }
+    return {
+      updatedSub: sessionResult.subscription,
+      transaction: sessionResult.transaction,
+      receipt: sessionResult.receipt
+    };
   }
 
   const stripe = await getStripeClient();

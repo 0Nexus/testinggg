@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, UserSubscription } from '../types';
 import {
   ShieldCheck,
@@ -11,18 +11,14 @@ import {
   AlertCircle,
   RefreshCw,
   Sparkles,
-  Zap,
   Check,
-  FileText,
   X,
-  Layers,
-  ChevronRight,
-  Info,
-  Calendar,
-  Globe,
   ExternalLink,
   ShieldAlert,
-  Smartphone
+  Smartphone,
+  Layers,
+  Receipt,
+  FileCheck
 } from 'lucide-react';
 
 export interface StripeCheckoutItem {
@@ -57,9 +53,7 @@ export const StripeSubscriptionCheckoutModal: React.FC<StripeSubscriptionCheckou
     item?.billingInterval || (item?.annualPriceGBP && item.annualPriceGBP > 0 ? 'annual' : 'monthly')
   );
 
-  const [paymentRail, setPaymentRail] = useState<'card' | 'direct_debit' | 'apple_pay'>('card');
-
-  // Customer Fields
+  // Customer & Invoice Fields
   const [customerName, setCustomerName] = useState(currentUser?.name || 'Arthur Vance');
   const [customerEmail, setCustomerEmail] = useState(currentUser?.email || 'arthur.vance@tradecorp.co.uk');
   const [companyName, setCompanyName] = useState(currentUser?.companyName || 'Vance Construction & Maintenance Ltd');
@@ -67,53 +61,45 @@ export const StripeSubscriptionCheckoutModal: React.FC<StripeSubscriptionCheckou
   const [billingAddress, setBillingAddress] = useState('14 Berkeley Square, Mayfair, London');
   const [postcode, setPostcode] = useState('W1J 6BQ');
 
-  // BACS Direct Debit Fields
-  const [sortCode, setSortCode] = useState('20-45-77');
-  const [accountNumber, setAccountNumber] = useState('83920194');
-  const [accountHolderName, setAccountHolderName] = useState(customerName);
-  const [acceptDirectDebitMandate, setAcceptDirectDebitMandate] = useState(true);
+  // Checkout Flow Stages: 'configure' | 'awaiting_stripe' | 'settled'
+  const [flowStage, setFlowStage] = useState<'configure' | 'awaiting_stripe' | 'settled'>('configure');
 
-  // Card Fields
-  const [cardHolder, setCardHolder] = useState(customerName);
-  const [cardNumber, setCardNumber] = useState('4242 •••• •••• 4242');
-  const [cardExpiry, setCardExpiry] = useState('12/28');
-  const [cardCvv, setCardCvv] = useState('888');
-  const [saveToStripeVault, setSaveToStripeVault] = useState(true);
-
-  // Processing & State
+  // State & Loading
   const [isProcessing, setIsProcessing] = useState(false);
-  const [processingStep, setProcessingStep] = useState<string>('');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [configNotice, setConfigNotice] = useState<{ message: string; reasonCategory?: string; gcpProjectId?: string } | null>(null);
-  const [settledReceipt, setSettledReceipt] = useState<any>(null);
   const [activeSession, setActiveSession] = useState<{
     id: string;
-    clientSecret?: string;
-    publishableKey?: string;
+    checkoutUrl: string;
     isLive?: boolean;
+    publishableKey?: string;
   } | null>(null);
-
-  // Architecture Diagram Drawer
+  const [settledReceipt, setSettledReceipt] = useState<any>(null);
   const [showArchFlow, setShowArchFlow] = useState(false);
-  const [archStep, setArchStep] = useState<number>(1);
 
-  // Reset states when item opens
+  // Polling ref to clear timer when component unmounts
+  const pollTimerRef = useRef<any>(null);
+
+  // Synchronize state on open
   useEffect(() => {
     if (item && isOpen) {
       setErrorMessage(null);
       setSettledReceipt(null);
-      setArchStep(1);
+      setFlowStage('configure');
+      setActiveSession(null);
       setBillingInterval(
         item.billingInterval || (item.annualPriceGBP && item.annualPriceGBP > 0 ? 'annual' : 'monthly')
       );
-      if (currentUser?.name) {
-        setCustomerName(currentUser.name);
-        setAccountHolderName(currentUser.name);
-        setCardHolder(currentUser.name);
-      }
+      if (currentUser?.name) setCustomerName(currentUser.name);
       if (currentUser?.email) setCustomerEmail(currentUser.email);
       if (currentUser?.companyName) setCompanyName(currentUser.companyName);
     }
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+      }
+    };
   }, [item, isOpen, currentUser]);
 
   // Pricing calculations
@@ -134,122 +120,27 @@ export const StripeSubscriptionCheckoutModal: React.FC<StripeSubscriptionCheckou
 
   const { base, vat, total, savingsAnnual } = calculatePricing();
 
-  // Create Stripe Session on Modal Open
-  useEffect(() => {
-    if (isOpen && item) {
-      let isMounted = true;
-
-      const initStripeSession = async () => {
-        try {
-          setArchStep(2);
-          const token = localStorage.getItem('tidy_secure_token');
-          const res = await fetch('/api/stripe/create-subscription-intent', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: token ? `Bearer ${token}` : ''
-            },
-            body: JSON.stringify({
-              planId: item.id,
-              itemId: item.id,
-              itemType: item.type,
-              billingInterval,
-              amount: total,
-              currency: 'GBP',
-              customerEmail,
-              customerName,
-              companyName,
-              companyVatNumber: vatNumber,
-              billingAddress: `${billingAddress}, ${postcode}`
-            })
-          });
-
-          const data = await res.json();
-          if (!isMounted) return;
-
-          if (!res.ok || !data.success) {
-            if (data.configured === false || (data.error && data.error.includes('credentials'))) {
-              setConfigNotice({
-                message: data.error || 'Stripe API credentials not detected.',
-                reasonCategory: data.diagnostics?.reasonCategory || 'not_configured',
-                gcpProjectId: data.diagnostics?.gcpProjectId
-              });
-            } else {
-              setErrorMessage(data.error || 'Failed to initialize Stripe session');
-            }
-            return;
-          }
-
-          if (data.diagnostics && data.diagnostics.reasonCategory !== 'configured') {
-            setConfigNotice({
-              message: data.diagnostics.statusMessage || 'Stripe test mode active.',
-              reasonCategory: data.diagnostics.reasonCategory,
-              gcpProjectId: data.diagnostics.gcpProjectId
-            });
-          }
-
-          setActiveSession({
-            id: data.paymentIntentId || data.checkoutId,
-            clientSecret: data.clientSecret,
-            publishableKey: data.publishableKey,
-            isLive: data.isLive
-          });
-
-          setArchStep(5);
-        } catch (e: any) {
-          if (isMounted) {
-            console.error('Failed to initialize Stripe checkout session:', e);
-            setErrorMessage(e.message || 'Failed to connect to Stripe API');
-          }
-        }
-      };
-
-      initStripeSession();
-
-      return () => {
-        isMounted = false;
-      };
-    }
-  }, [isOpen, item?.id, billingInterval, total]);
-
-  // Handle Real Payment Authorization & Confirmation
-  const handleProcessStripePayment = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Create Stripe Hosted Checkout Session and Launch
+  const handleLaunchStripeCheckout = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!item) return;
+
     setErrorMessage(null);
-
-    if (paymentRail === 'direct_debit' && !acceptDirectDebitMandate) {
-      setErrorMessage('Please accept the BACS Direct Debit Mandate to proceed.');
-      return;
-    }
-
-    if (!activeSession?.id) {
-      setErrorMessage('Stripe checkout session not ready. Please check connection.');
-      return;
-    }
-
     setIsProcessing(true);
-    setArchStep(6);
-    setProcessingStep('1/3 Authorizing transaction via Stripe UK Payments API...');
+    setProcessingStatus('Connecting to Stripe Payments UK API & creating Hosted Checkout...');
 
     try {
       const token = localStorage.getItem('tidy_secure_token');
+      const origin = window.location.origin;
 
-      // Slight UI delay for realistic bank authorization
-      await new Promise(r => setTimeout(r, 600));
-
-      setArchStep(7);
-      setProcessingStep('2/3 Verifying real payment settlement & provisioning subscription in database...');
-
-      const confirmRes = await fetch('/api/stripe/confirm-subscription', {
+      const res = await fetch('/api/stripe/create-subscription-intent', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: token ? `Bearer ${token}` : ''
         },
         body: JSON.stringify({
-          paymentIntentId: activeSession.id,
-          checkoutId: activeSession.id,
+          planId: item.id,
           itemId: item.id,
           itemType: item.type,
           billingInterval,
@@ -260,27 +151,104 @@ export const StripeSubscriptionCheckoutModal: React.FC<StripeSubscriptionCheckou
           companyName,
           companyVatNumber: vatNumber,
           billingAddress: `${billingAddress}, ${postcode}`,
-          paymentMethod: paymentRail === 'direct_debit' ? 'BACS Direct Debit' : (paymentRail === 'apple_pay' ? 'Apple Pay / Google Pay' : 'Card')
+          successUrl: `${origin}/?payment_status=success&session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${origin}/?payment_status=cancelled`
         })
       });
 
-      const confirmData = await confirmRes.json();
+      const data = await res.json();
 
-      if (!confirmRes.ok || !confirmData.success) {
-        throw new Error(confirmData.error || 'Stripe payment confirmation failed.');
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to initialize Stripe Hosted Checkout.');
       }
 
-      setProcessingStep('3/3 Payment settled via Stripe & subscription provisioned!');
-      setSettledReceipt(confirmData.receipt);
-      setIsProcessing(false);
+      const checkoutUrl = data.checkoutUrl;
+      const sessionId = data.sessionId || data.checkoutId || data.paymentIntentId;
 
-      if (confirmData.subscription) {
-        onSubscriptionSuccess(confirmData.subscription, confirmData.receipt);
+      if (!checkoutUrl) {
+        throw new Error('No Stripe Hosted Checkout URL returned by server.');
+      }
+
+      setActiveSession({
+        id: sessionId,
+        checkoutUrl,
+        isLive: data.isLive,
+        publishableKey: data.publishableKey
+      });
+
+      setIsProcessing(false);
+      setFlowStage('awaiting_stripe');
+
+      // Attempt to open Stripe Checkout in a new window/tab
+      const popup = window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        // Pop-up was blocked or in restrictive iframe; the user has prominent buttons to open or redirect
+        console.log('Window popup was blocked or opened in background. Direct link available.');
+      }
+
+      // Start polling for payment verification
+      startPollingForSession(sessionId);
+    } catch (err: any) {
+      console.error('[STRIPE HOSTED CHECKOUT ERROR]:', err);
+      setIsProcessing(false);
+      setErrorMessage(err.message || 'Failed to launch Stripe Hosted Checkout.');
+    }
+  };
+
+  // Verify status of Stripe Checkout Session
+  const verifySessionStatus = async (sessionId: string, silent = false) => {
+    if (!sessionId) return false;
+    if (!silent) setIsVerifying(true);
+
+    try {
+      const res = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
+      const data = await res.json();
+
+      if (data.verified && data.paymentStatus === 'paid') {
+        // Payment succeeded and DB provisioned!
+        if (pollTimerRef.current) {
+          clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+        }
+
+        setSettledReceipt(data.receipt);
+        setFlowStage('settled');
+        setIsVerifying(false);
+
+        if (data.subscription) {
+          onSubscriptionSuccess(data.subscription, data.receipt);
+        }
+        return true;
+      } else {
+        if (!silent) {
+          setProcessingStatus(data.message || 'Payment not yet confirmed by Stripe. Please complete the steps on Stripe.');
+        }
       }
     } catch (err: any) {
-      setIsProcessing(false);
-      setErrorMessage(err.message || 'Stripe payment processing failed.');
+      console.error('[VERIFY STATUS ERROR]:', err);
+      if (!silent) {
+        setErrorMessage(err.message || 'Error checking session status.');
+      }
+    } finally {
+      if (!silent) setIsVerifying(false);
     }
+    return false;
+  };
+
+  // Start polling every 3.5 seconds
+  const startPollingForSession = (sessionId: string) => {
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+
+    let checkCount = 0;
+    pollTimerRef.current = setInterval(async () => {
+      checkCount++;
+      const completed = await verifySessionStatus(sessionId, true);
+      if (completed || checkCount > 120) {
+        // Stop after 7 minutes of polling
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    }, 3500);
   };
 
   const handleDownloadInvoice = () => {
@@ -289,8 +257,8 @@ export const StripeSubscriptionCheckoutModal: React.FC<StripeSubscriptionCheckou
 TIDY CORPORATION LTD & STRIPE UK SUBSCRIPTION TAX INVOICE
 FCA Authorized EMI: Stripe Payments UK Limited (FRN: 900461)
 ========================================================================
-Invoice Reference: ${settledReceipt?.transactionId || 'STRIPE-TX-9941'}
-Gateway Ref: ${settledReceipt?.gatewayReference || activeSession?.id || 'pi_stripe_live'}
+Invoice Reference: ${settledReceipt?.transactionId || 'STRIPE-TX-' + Math.floor(1000 + Math.random() * 9000)}
+Gateway Reference: ${settledReceipt?.gatewayReference || activeSession?.id || 'cs_stripe_live'}
 Date & Time: ${new Date(settledReceipt?.date || Date.now()).toUTCString()}
 Status: ${settledReceipt?.status || 'Paid & Active'}
 
@@ -299,12 +267,12 @@ Customer: ${settledReceipt?.customerName || customerName}
 Company: ${settledReceipt?.companyName || companyName || 'N/A'}
 Email: ${settledReceipt?.customerEmail || customerEmail}
 VAT Reg No: ${settledReceipt?.companyVatNumber || vatNumber || 'N/A'}
-Address: ${settledReceipt?.billingAddress || billingAddress}
+Address: ${settledReceipt?.billingAddress || `${billingAddress}, ${postcode}`}
 
 ITEM SPECIFICATION:
 Item / Subscription: ${item.name} (${item.type.toUpperCase()})
 Billing Schedule: ${billingInterval.toUpperCase()} (${billingInterval === 'annual' ? '12 Months Pre-Paid' : 'Monthly Recurring'})
-Payment Method: ${settledReceipt?.paymentMethodUsed || (paymentRail === 'direct_debit' ? 'BACS Direct Debit' : 'Stripe Card')}
+Payment Method: Stripe Hosted Checkout (Cards / Apple Pay / Google Pay / BACS)
 Cleared Via: Stripe Payments UK Limited (FCA Authorized EMI)
 
 FINANCIAL BREAKDOWN:
@@ -327,18 +295,18 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
   if (!isOpen || !item) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-      <div className="relative max-w-4xl w-full bg-slate-900 border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden my-auto text-slate-100 font-sans">
+    <div id="stripe-checkout-modal" className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+      <div className="relative max-w-3xl w-full bg-slate-900 border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden my-auto text-slate-100 font-sans">
         
         {/* Header Banner */}
         <div className="bg-gradient-to-r from-[#635BFF]/30 via-slate-900 to-[#0A2540] p-5 sm:p-6 border-b border-slate-700/80 flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <div className="h-10 w-10 rounded-2xl bg-[#635BFF] flex items-center justify-center text-white shadow-lg font-black text-sm tracking-wide">
+            <div className="h-10 w-10 rounded-2xl bg-[#635BFF] flex items-center justify-center text-white shadow-lg font-black text-base tracking-wide">
               S
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <h3 className="text-lg font-black text-white tracking-tight">Stripe Billing Checkout</h3>
+                <h3 className="text-lg font-black text-white tracking-tight">Stripe Hosted Checkout</h3>
                 <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-mono font-bold uppercase">
                   FCA Regulated #900461
                 </span>
@@ -347,21 +315,23 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                 </span>
               </div>
               <p className="text-xs text-slate-300">
-                UK BACS Direct Debit, Apple Pay, Google Pay &amp; 3DS 2.0 Recurring Subscription
+                Official Stripe Checkout • Apple Pay, Google Pay, Cards &amp; UK BACS Direct Debit
               </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-2">
             <button
+              type="button"
               onClick={() => setShowArchFlow(!showArchFlow)}
               className="text-xs px-2.5 py-1 rounded-lg bg-indigo-950/80 border border-indigo-700/50 text-indigo-300 hover:bg-indigo-900 transition flex items-center space-x-1 cursor-pointer"
-              title="Toggle Live Architecture Diagram Flow"
+              title="Toggle Architecture Diagram"
             >
               <Layers className="h-3.5 w-3.5 text-indigo-400" />
-              <span>{showArchFlow ? 'Hide Architecture' : 'Show Architecture'}</span>
+              <span>{showArchFlow ? 'Hide Flow' : 'View Flow'}</span>
             </button>
             <button
+              type="button"
               onClick={onClose}
               className="text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 p-2 rounded-full transition-all cursor-pointer"
               title="Close Checkout"
@@ -371,102 +341,31 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
           </div>
         </div>
 
-        {/* Credentials Notice if Key Missing */}
-        {configNotice && configNotice.reasonCategory !== 'configured' && (
-          <div className="bg-amber-950/80 border-b border-amber-800 p-4 text-amber-200 text-xs flex items-start space-x-3">
-            <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <div className="flex items-center space-x-2">
-                <strong className="font-bold text-white">Stripe Configuration Note</strong>
-                {configNotice.reasonCategory && (
-                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-900/80 text-amber-300 border border-amber-700/60">
-                    {configNotice.reasonCategory.replace(/_/g, ' ')}
-                  </span>
-                )}
-              </div>
-              <p className="text-amber-300/90 leading-relaxed font-mono text-[11px]">
-                {configNotice.message}
-              </p>
-              <div className="text-[11px] text-amber-200/90 bg-amber-900/40 p-2 rounded border border-amber-700/40">
-                To process live cards with your Stripe merchant account, add <code className="font-mono bg-black/40 px-1 py-0.5 rounded text-amber-300">STRIPE_SECRET_KEY</code> to Google Secret Manager or your environment variables. Test checkouts function immediately in this sandbox.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Live Architecture Flow Progress Banner */}
+        {/* Architecture Flow Banner */}
         {showArchFlow && (
           <div className="bg-slate-950/90 border-b border-slate-800 p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center space-x-2">
-                <Sparkles className="h-4 w-4 text-indigo-400" />
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                  Live Subscription Payment Architecture (Stripe End-to-End)
-                </span>
-              </div>
-              {activeSession && (
-                <div className="text-[11px] font-mono text-slate-400 flex items-center space-x-2">
-                  <span className="text-slate-500">PaymentIntent:</span>
-                  <span className="text-indigo-400 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800/50">{activeSession.id}</span>
-                </div>
-              )}
+            <div className="flex items-center space-x-2 mb-2">
+              <Sparkles className="h-4 w-4 text-indigo-400" />
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                Stripe Hosted Checkout Architecture Flow
+              </span>
             </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 text-[11px]">
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 1 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 1 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>1. Customer</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Selects Plan</div>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-[11px]">
+              <div className="p-2.5 rounded-xl border bg-slate-900/80 border-slate-800 text-slate-300">
+                <div className="font-bold text-indigo-400">1. Plan Selection</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Select plan &amp; interval</div>
               </div>
-
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 2 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 2 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>2. Website</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">POST /api/create-checkout</div>
+              <div className="p-2.5 rounded-xl border bg-slate-900/80 border-slate-800 text-slate-300">
+                <div className="font-bold text-indigo-400">2. Stripe Checkout</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Redirect to checkout.stripe.com</div>
               </div>
-
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 3 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 3 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>3. Backend</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Stripe PaymentIntent</div>
+              <div className="p-2.5 rounded-xl border bg-slate-900/80 border-slate-800 text-slate-300">
+                <div className="font-bold text-indigo-400">3. 3DS &amp; Biometric</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Apple Pay, Google Pay, Cards</div>
               </div>
-
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 4 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 4 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>4. Stripe</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Client Secret &amp; 3DS</div>
-              </div>
-
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 5 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 5 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>5. Secure Form</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">PCI-DSS Tokenized</div>
-              </div>
-
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 6 ? 'bg-indigo-950/60 border-indigo-500 text-indigo-200 animate-pulse' : (archStep > 6 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500')}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 6 ? 'text-indigo-400' : 'text-slate-600'}`} />
-                  <span>6. Stripe Clears</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Bank Settlement</div>
-              </div>
-
-              <div className={`p-2 rounded-xl border transition-all ${archStep >= 7 ? 'bg-emerald-950/50 border-emerald-600 text-emerald-200' : 'bg-slate-900/60 border-slate-800 text-slate-500'}`}>
-                <div className="font-bold flex items-center space-x-1">
-                  <CheckCircle2 className={`h-3 w-3 ${archStep >= 7 ? 'text-emerald-400' : 'text-slate-600'}`} />
-                  <span>7. DB &amp; Receipt</span>
-                </div>
-                <div className="text-[10px] mt-0.5 text-slate-400">Instant Access</div>
+              <div className="p-2.5 rounded-xl border bg-slate-900/80 border-slate-800 text-slate-300">
+                <div className="font-bold text-emerald-400">4. Auto-Activation</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Instant provision &amp; VAT invoice</div>
               </div>
             </div>
           </div>
@@ -474,17 +373,20 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
 
         {/* Modal Body */}
         <div className="p-6 max-h-[80vh] overflow-y-auto">
-          {settledReceipt ? (
-            /* SUCCESS & SETTLED RECEIPT VIEW */
+          
+          {/* ========================================================================= */}
+          {/* STAGE 3: SETTLED & VERIFIED RECEIPT                                       */}
+          {/* ========================================================================= */}
+          {flowStage === 'settled' && settledReceipt && (
             <div className="space-y-6 text-center py-4">
               <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full flex items-center justify-center mx-auto animate-bounce">
                 <Check className="h-8 w-8" />
               </div>
 
               <div className="space-y-2">
-                <h4 className="text-2xl font-black text-white">Payment Succeeded &amp; Subscription Active!</h4>
+                <h4 className="text-2xl font-black text-white">Payment Authorized &amp; Subscription Active!</h4>
                 <p className="text-sm text-slate-300 max-w-md mx-auto">
-                  Your payment of <strong className="text-white">£{settledReceipt.amount?.toFixed(2)} GBP</strong> was authorized and cleared via Stripe Payments UK Limited.
+                  Your payment of <strong className="text-white">£{settledReceipt.amount?.toFixed(2)} GBP</strong> was verified and settled via Stripe Payments UK Limited.
                 </p>
               </div>
 
@@ -495,7 +397,7 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                   <span className="text-white font-bold">{settledReceipt.transactionId}</span>
                 </div>
                 <div className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="text-slate-400">Stripe Payment Ref:</span>
+                  <span className="text-slate-400">Stripe Ref:</span>
                   <span className="text-indigo-400 truncate max-w-[200px]">{settledReceipt.gatewayReference}</span>
                 </div>
                 <div className="flex justify-between border-b border-slate-800 pb-2">
@@ -503,17 +405,18 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                   <span className="text-white font-bold">{item.name}</span>
                 </div>
                 <div className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="text-slate-400">Cleared Via:</span>
+                  <span className="text-slate-400">Gateway:</span>
                   <span className="text-emerald-400">Stripe Payments UK Limited</span>
                 </div>
                 <div className="flex justify-between pt-1 text-sm font-bold">
                   <span className="text-slate-300">Total Charged:</span>
-                  <span className="text-white">£{settledReceipt.amount?.toFixed(2)} GBP</span>
+                  <span className="text-emerald-400">£{settledReceipt.amount?.toFixed(2)} GBP</span>
                 </div>
               </div>
 
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
                 <button
+                  type="button"
                   onClick={handleDownloadInvoice}
                   className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs flex items-center justify-center space-x-2 transition cursor-pointer"
                 >
@@ -521,16 +424,109 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                   <span>Download VAT Tax Invoice</span>
                 </button>
                 <button
+                  type="button"
                   onClick={onClose}
                   className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-[#635BFF] hover:bg-[#534be0] text-white font-black text-xs transition shadow-lg cursor-pointer"
                 >
-                  Go to Dashboard &amp; Portal
+                  Return to Dashboard
                 </button>
               </div>
             </div>
-          ) : (
-            /* CHECKOUT FORM VIEW */
-            <form onSubmit={handleProcessStripePayment} className="space-y-6">
+          )}
+
+          {/* ========================================================================= */}
+          {/* STAGE 2: AWAITING PAYMENT ON STRIPE HOSTED CHECKOUT                       */}
+          {/* ========================================================================= */}
+          {flowStage === 'awaiting_stripe' && activeSession && (
+            <div className="space-y-6 text-center py-6">
+              <div className="relative mx-auto w-20 h-20">
+                <div className="absolute inset-0 rounded-full bg-[#635BFF]/20 animate-ping" />
+                <div className="relative h-20 w-20 rounded-full bg-[#635BFF]/30 border-2 border-[#635BFF] flex items-center justify-center text-white">
+                  <RefreshCw className="h-8 w-8 text-indigo-300 animate-spin" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h4 className="text-2xl font-black text-white">Stripe Hosted Checkout Open</h4>
+                <p className="text-sm text-slate-300 max-w-md mx-auto leading-relaxed">
+                  Please complete your card, Apple Pay, Google Pay, or BACS payment on Stripe's secure portal. We will automatically detect your completion and activate your plan.
+                </p>
+              </div>
+
+              {/* Action buttons to open / redirect */}
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-5 max-w-lg mx-auto space-y-4 text-left">
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <span className="text-slate-400">Stripe Session:</span>
+                  <span className="text-indigo-400 truncate max-w-[220px]">{activeSession.id}</span>
+                </div>
+
+                <div className="border-t border-slate-800/80 pt-3 flex flex-col sm:flex-row gap-2">
+                  <a
+                    href={activeSession.checkoutUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-3 px-4 rounded-xl bg-[#635BFF] hover:bg-[#534be0] text-white font-black text-xs flex items-center justify-center space-x-2 transition shadow-lg cursor-pointer"
+                  >
+                    <span>Open Stripe Portal</span>
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+
+                  <button
+                    type="button"
+                    onClick={() => { window.location.href = activeSession.checkoutUrl; }}
+                    className="flex-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs flex items-center justify-center space-x-2 transition cursor-pointer"
+                  >
+                    <span>Redirect Here</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Status & Manual Check */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-center space-x-2 text-xs text-indigo-300 font-mono">
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Listening for Stripe completion webhook / event...</span>
+                </div>
+
+                <div className="flex items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => verifySessionStatus(activeSession.id)}
+                    disabled={isVerifying}
+                    className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700 transition flex items-center space-x-2 cursor-pointer"
+                  >
+                    {isVerifying ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                    ) : (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    )}
+                    <span>I Have Completed Payment - Verify Now</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFlowStage('configure')}
+                    className="px-4 py-2 rounded-xl text-slate-400 hover:text-white text-xs font-bold transition cursor-pointer"
+                  >
+                    Back to Plan Options
+                  </button>
+                </div>
+
+                {errorMessage && (
+                  <div className="p-3 bg-rose-950/80 border border-rose-800 rounded-xl text-rose-200 text-xs max-w-md mx-auto">
+                    {errorMessage}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ========================================================================= */}
+          {/* STAGE 1: PLAN CONFIGURATION & LAUNCH STRIPE CHECKOUT                      */}
+          {/* ========================================================================= */}
+          {flowStage === 'configure' && (
+            <form onSubmit={handleLaunchStripeCheckout} className="space-y-6">
               {errorMessage && (
                 <div className="p-3.5 bg-rose-950/80 border border-rose-800 rounded-2xl flex items-center space-x-3 text-rose-200 text-xs">
                   <AlertCircle className="h-5 w-5 text-rose-400 shrink-0" />
@@ -540,7 +536,7 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 
-                {/* Left Column: Plan & Financial Specification */}
+                {/* Left Column: Plan Overview & Financial Breakdown */}
                 <div className="lg:col-span-5 space-y-4">
                   <div className="bg-slate-950/70 border border-slate-800/90 rounded-2xl p-4 space-y-3">
                     <div className="flex items-center justify-between">
@@ -559,7 +555,7 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                       <p className="text-xs text-slate-400 mt-0.5">{item.description}</p>
                     </div>
 
-                    {/* Annual vs Monthly Interval Switch (for plans with annual rates) */}
+                    {/* Annual vs Monthly Interval Switch */}
                     {item.annualPriceGBP && item.annualPriceGBP > 0 && (
                       <div className="p-1 bg-slate-900 border border-slate-800 rounded-xl grid grid-cols-2 gap-1 text-xs">
                         <button
@@ -611,232 +607,64 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                     </div>
                   </div>
 
-                  {/* Security Clearance Badge */}
-                  <div className="bg-indigo-950/30 border border-indigo-900/50 rounded-2xl p-3.5 space-y-1 text-xs">
+                  {/* Stripe Security & Guarantee */}
+                  <div className="bg-indigo-950/30 border border-indigo-900/50 rounded-2xl p-3.5 space-y-2 text-xs">
                     <div className="flex items-center space-x-2 text-indigo-300 font-bold">
                       <ShieldCheck className="h-4 w-4 text-indigo-400" />
-                      <span>Stripe Payments UK Security</span>
+                      <span>Why Stripe Hosted Checkout?</span>
                     </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      All subscriptions are processed via Stripe Payments UK Limited. Card details are tokenized directly with Stripe's PCI-DSS Level 1 vault. Tidy Corporation does not store raw credit card numbers.
-                    </p>
+                    <ul className="text-[11px] text-slate-400 space-y-1 leading-relaxed">
+                      <li className="flex items-start space-x-1.5">
+                        <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                        <span>Frictionless 3D Secure 2.0 biometric verification</span>
+                      </li>
+                      <li className="flex items-start space-x-1.5">
+                        <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                        <span>Instant support for Apple Pay, Google Pay, and BACS</span>
+                      </li>
+                      <li className="flex items-start space-x-1.5">
+                        <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                        <span>Card data remains 100% tokenized on Stripe's PCI Level 1 vault</span>
+                      </li>
+                    </ul>
                   </div>
                 </div>
 
-                {/* Right Column: Payment Rails & Billing Details */}
+                {/* Right Column: Invoicing Details & Launch Button */}
                 <div className="lg:col-span-7 space-y-4">
                   
-                  {/* Payment Rail Selector Tabs */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPaymentRail('card')}
-                      className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center space-y-1 cursor-pointer ${
-                        paymentRail === 'card'
-                          ? 'bg-indigo-950/60 border-indigo-500 text-white shadow-md'
-                          : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <CreditCard className="h-4 w-4 text-indigo-400" />
-                      <span>Credit / Debit Card</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setPaymentRail('direct_debit')}
-                      className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center space-y-1 cursor-pointer ${
-                        paymentRail === 'direct_debit'
-                          ? 'bg-indigo-950/60 border-indigo-500 text-white shadow-md'
-                          : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <Building2 className="h-4 w-4 text-emerald-400" />
-                      <span>BACS Direct Debit</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setPaymentRail('apple_pay')}
-                      className={`p-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center space-y-1 cursor-pointer ${
-                        paymentRail === 'apple_pay'
-                          ? 'bg-indigo-950/60 border-indigo-500 text-white shadow-md'
-                          : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      <Smartphone className="h-4 w-4 text-cyan-400" />
-                      <span>Apple / Google Pay</span>
-                    </button>
+                  {/* Supported Rails Card */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <span className="text-[10px] font-mono font-bold uppercase text-slate-400 tracking-wider block">
+                      Accepted Payment Methods on Stripe
+                    </span>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                      <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl flex flex-col items-center justify-center space-y-1">
+                        <CreditCard className="h-5 w-5 text-indigo-400" />
+                        <span className="font-bold text-slate-200">Cards</span>
+                        <span className="text-[10px] text-slate-400 font-mono">Visa • MC • Amex</span>
+                      </div>
+                      <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl flex flex-col items-center justify-center space-y-1">
+                        <Smartphone className="h-5 w-5 text-cyan-400" />
+                        <span className="font-bold text-slate-200">Wallets</span>
+                        <span className="text-[10px] text-slate-400 font-mono">Apple &amp; Google Pay</span>
+                      </div>
+                      <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl flex flex-col items-center justify-center space-y-1">
+                        <Building2 className="h-5 w-5 text-emerald-400" />
+                        <span className="font-bold text-slate-200">UK BACS</span>
+                        <span className="text-[10px] text-slate-400 font-mono">Direct Debit</span>
+                      </div>
+                    </div>
                   </div>
-
-                  {/* Payment Method Specific Inputs */}
-                  {paymentRail === 'card' && (
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
-                      <div className="flex items-center justify-between text-xs text-slate-400">
-                        <span className="font-bold text-slate-200">Card Payment (3DS 2.0 Secure)</span>
-                        <div className="flex items-center space-x-1 font-mono text-[10px] text-slate-400">
-                          <span>Visa</span>
-                          <span>•</span>
-                          <span>Mastercard</span>
-                          <span>•</span>
-                          <span>Amex</span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                          Name on Card
-                        </label>
-                        <input
-                          type="text"
-                          value={cardHolder}
-                          onChange={(e) => setCardHolder(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                          placeholder="e.g. Arthur Vance"
-                          required
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                          Card Number
-                        </label>
-                        <div className="relative">
-                          <input
-                            type="text"
-                            value={cardNumber}
-                            onChange={(e) => setCardNumber(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                            placeholder="4242 •••• •••• 4242"
-                            required
-                          />
-                          <Lock className="h-3.5 w-3.5 text-slate-500 absolute right-3 top-2.5" />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                            Expiry Date
-                          </label>
-                          <input
-                            type="text"
-                            value={cardExpiry}
-                            onChange={(e) => setCardExpiry(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                            placeholder="MM/YY"
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                            CVC / CVV
-                          </label>
-                          <input
-                            type="text"
-                            value={cardCvv}
-                            onChange={(e) => setCardCvv(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                            placeholder="CVC"
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <label className="flex items-center space-x-2 text-xs text-slate-300 cursor-pointer pt-1">
-                        <input
-                          type="checkbox"
-                          checked={saveToStripeVault}
-                          onChange={(e) => setSaveToStripeVault(e.target.checked)}
-                          className="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500"
-                        />
-                        <span>Securely tokenize with Stripe Vault for frictionless auto-renewals</span>
-                      </label>
-                    </div>
-                  )}
-
-                  {paymentRail === 'direct_debit' && (
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
-                      <div className="flex items-center justify-between text-xs text-slate-400">
-                        <span className="font-bold text-slate-200">UK BACS Direct Debit (via Stripe)</span>
-                        <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">
-                          BACS Guarantee Protected
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                            Sort Code
-                          </label>
-                          <input
-                            type="text"
-                            value={sortCode}
-                            onChange={(e) => setSortCode(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                            placeholder="20-00-00"
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                            Account Number
-                          </label>
-                          <input
-                            type="text"
-                            value={accountNumber}
-                            onChange={(e) => setAccountNumber(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                            placeholder="8 Digits"
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-300 uppercase mb-1">
-                          Account Holder Name
-                        </label>
-                        <input
-                          type="text"
-                          value={accountHolderName}
-                          onChange={(e) => setAccountHolderName(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                          placeholder="Name as registered on UK Bank Account"
-                          required
-                        />
-                      </div>
-
-                      <label className="flex items-start space-x-2 text-[11px] text-slate-300 cursor-pointer pt-1 bg-slate-900/60 p-2.5 rounded-xl border border-slate-800">
-                        <input
-                          type="checkbox"
-                          checked={acceptDirectDebitMandate}
-                          onChange={(e) => setAcceptDirectDebitMandate(e.target.checked)}
-                          className="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 mt-0.5"
-                        />
-                        <span className="leading-relaxed">
-                          I confirm that I am the account holder and only person required to authorize debits on this account. Payments will be collected under the <strong>UK Direct Debit Guarantee</strong> by Stripe on behalf of Tidy Corporation Ltd.
-                        </span>
-                      </label>
-                    </div>
-                  )}
-
-                  {paymentRail === 'apple_pay' && (
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-5 text-center space-y-3">
-                      <div className="h-10 w-10 bg-cyan-950 text-cyan-400 border border-cyan-800 rounded-xl flex items-center justify-center mx-auto">
-                        <Smartphone className="h-5 w-5" />
-                      </div>
-                      <h5 className="text-sm font-bold text-white">Express Biometric Checkout</h5>
-                      <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                        Stripe Express Checkout provides instant authorization using Apple Pay, Google Pay, or Link with stored biometric verification.
-                      </p>
-                    </div>
-                  )}
 
                   {/* Business & Tax Invoice Details */}
                   <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-3">
-                    <span className="text-[10px] font-mono font-bold uppercase text-slate-400 tracking-wider block">
-                      Tax Invoice Billing Details (UK HMRC Compliant)
-                    </span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono font-bold uppercase text-slate-400 tracking-wider">
+                        UK VAT Invoice Details (Pre-filled for your receipt)
+                      </span>
+                      <Receipt className="h-3.5 w-3.5 text-slate-500" />
+                    </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
@@ -925,22 +753,22 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
                     <button
                       type="submit"
                       disabled={isProcessing}
-                      className={`w-full py-3.5 px-6 rounded-2xl font-black text-sm text-white shadow-xl transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+                      className={`w-full py-4 px-6 rounded-2xl font-black text-sm text-white shadow-xl transition-all flex items-center justify-center space-x-2 cursor-pointer ${
                         isProcessing
                           ? 'bg-slate-700 cursor-not-allowed opacity-80'
-                          : 'bg-[#635BFF] hover:bg-[#534be0] active:scale-[0.99]'
+                          : 'bg-[#635BFF] hover:bg-[#534be0] active:scale-[0.99] hover:shadow-indigo-500/25'
                       }`}
                     >
                       {isProcessing ? (
                         <>
                           <RefreshCw className="h-4 w-4 animate-spin text-indigo-300" />
-                          <span>{processingStep || 'Authorizing via Stripe...'}</span>
+                          <span>{processingStatus || 'Creating Stripe Hosted Checkout...'}</span>
                         </>
                       ) : (
                         <>
                           <Lock className="h-4 w-4 text-indigo-200" />
-                          <span>Authorize £{total.toFixed(2)} GBP via Stripe</span>
-                          <ArrowRight className="h-4 w-4" />
+                          <span>Proceed to Stripe Hosted Checkout — £{total.toFixed(2)} GBP</span>
+                          <ExternalLink className="h-4 w-4 ml-1" />
                         </>
                       )}
                     </button>
@@ -957,6 +785,7 @@ Thank you for partnering with Tidy Corporation Ltd. All client funds held in rin
               </div>
             </form>
           )}
+
         </div>
 
       </div>

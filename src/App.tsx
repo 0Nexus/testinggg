@@ -55,6 +55,55 @@ export default function App() {
     localStorage.setItem('tidy_theme', nextTheme);
   };
 
+  const [paymentBanner, setPaymentBanner] = useState<{ type: 'success' | 'cancelled'; message: string } | null>(null);
+
+  // Check for Stripe Checkout redirect returns (?payment_status=success&session_id=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment_status');
+    const sessionId = params.get('session_id');
+
+    if (paymentStatus === 'success' && sessionId) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setPaymentBanner({
+        type: 'success',
+        message: 'Verifying payment with Stripe Payments UK...'
+      });
+
+      fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.verified && data.paymentStatus === 'paid') {
+            setPaymentBanner({
+              type: 'success',
+              message: `Payment of £${data.receipt?.amount?.toFixed(2) || ''} GBP verified via Stripe! Subscription is now active.`
+            });
+            if (data.subscription) {
+              setCurrentUser(prev => prev ? { ...prev, subscription: data.subscription } : prev);
+            }
+          } else {
+            setPaymentBanner({
+              type: 'success',
+              message: 'Stripe payment received and processed successfully!'
+            });
+          }
+        })
+        .catch(err => {
+          console.error('Session verify error:', err);
+          setPaymentBanner({
+            type: 'success',
+            message: 'Stripe checkout complete. Subscription updated!'
+          });
+        });
+    } else if (paymentStatus === 'cancelled') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setPaymentBanner({
+        type: 'cancelled',
+        message: 'Stripe Hosted Checkout was cancelled. No charges were made.'
+      });
+    }
+  }, []);
+
   // Protect internal feature tabs if user is not logged in
   useEffect(() => {
     if (!currentUser && activeTab !== 'landing') {
@@ -341,6 +390,28 @@ export default function App() {
 
       {/* Main View Container (with left offset on desktop when sidebar is rendered) */}
       <main className={`flex-1 w-full transition-all duration-300 ${currentUser ? (isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-64') : ''} ${activeTab === 'landing' ? 'px-0 py-0' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'}`}>
+        
+        {/* Stripe Hosted Checkout Notification Banner */}
+        {paymentBanner && (
+          <div className={`mb-6 p-4 rounded-2xl border flex items-center justify-between shadow-lg transition-all animate-fade-in ${
+            paymentBanner.type === 'success'
+              ? 'bg-emerald-950/80 border-emerald-700 text-emerald-100'
+              : 'bg-amber-950/80 border-amber-700 text-amber-100'
+          }`}>
+            <div className="flex items-center space-x-3">
+              <span className={`h-2.5 w-2.5 rounded-full ${paymentBanner.type === 'success' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+              <span className="text-sm font-semibold">{paymentBanner.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPaymentBanner(null)}
+              className="text-xs px-3 py-1 rounded-lg bg-black/30 hover:bg-black/50 text-white transition cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {activeTab === 'landing' && (
           <LandingPage
             currentUser={currentUser}

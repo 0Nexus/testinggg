@@ -63,6 +63,7 @@ import {
   createStripeSubscriptionSession,
   applyStripeSubscriptionToUser,
   verifyAndConfirmStripePayment,
+  verifyStripeCheckoutSession,
   saveStripeSessionToDB,
   getStripeSessionFromDB
 } from './src/lib/stripeServer.js';
@@ -1227,6 +1228,9 @@ async function startServer() {
         } catch (e) {}
       }
 
+      const originHeader = (req.headers.origin as string) || (req.headers.referer ? new URL(req.headers.referer as string).origin : '') || '';
+      const appUrl = originHeader || process.env.APP_URL || 'http://localhost:3000';
+
       const emailToUse = (customerEmail || authenticatedUser?.email || 'user@tidycorp.co.uk').toLowerCase().trim();
       const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
 
@@ -1241,6 +1245,7 @@ async function startServer() {
         companyName,
         companyVatNumber,
         billingAddress,
+        appUrl,
         successUrl,
         cancelUrl
       });
@@ -1252,6 +1257,37 @@ async function startServer() {
     } catch (err: any) {
       console.error('[STRIPE SUBSCRIPTION INTENT ERROR]:', err);
       res.status(500).json({ error: err?.message || 'Failed to create Stripe subscription intent' });
+    }
+  });
+
+  // Dedicated Stripe Hosted Checkout Session Verifier (GET & POST)
+  app.get('/api/stripe/verify-session', async (req: Request, res: Response) => {
+    try {
+      const sessionId = (req.query.session_id as string) || (req.query.sessionId as string);
+      if (!sessionId) {
+        return res.status(400).json({ error: 'Missing session_id parameter' });
+      }
+
+      const result = await verifyStripeCheckoutSession(sessionId);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[STRIPE VERIFY SESSION ERROR]:', err);
+      res.status(500).json({ error: err?.message || 'Failed to verify Stripe checkout session' });
+    }
+  });
+
+  app.post('/api/stripe/verify-session', async (req: Request, res: Response) => {
+    try {
+      const sessionId = req.body.sessionId || req.body.session_id;
+      if (!sessionId) {
+        return res.status(400).json({ error: 'Missing sessionId parameter' });
+      }
+
+      const result = await verifyStripeCheckoutSession(sessionId);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[STRIPE VERIFY SESSION ERROR]:', err);
+      res.status(500).json({ error: err?.message || 'Failed to verify Stripe checkout session' });
     }
   });
 
@@ -1381,6 +1417,9 @@ async function startServer() {
         } catch (e) {}
       }
 
+      const originHeader = (req.headers.origin as string) || (req.headers.referer ? new URL(req.headers.referer as string).origin : '') || '';
+      const appUrl = originHeader || process.env.APP_URL || 'http://localhost:3000';
+
       const emailToUse = (customerEmail || authenticatedUser?.email || 'user@tidycorp.co.uk').toLowerCase().trim();
       const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
 
@@ -1395,6 +1434,7 @@ async function startServer() {
         companyName,
         companyVatNumber,
         billingAddress,
+        appUrl,
         successUrl,
         cancelUrl
       });
@@ -1402,8 +1442,9 @@ async function startServer() {
       res.status(201).json({
         success: true,
         gateway: 'stripe',
-        checkoutUrl: `/checkout/stripe-billing?intent_id=${result.paymentIntentId}`,
+        checkoutUrl: result.checkoutUrl,
         checkoutId: result.checkoutId,
+        sessionId: result.sessionId,
         paymentIntentId: result.paymentIntentId,
         clientSecret: result.clientSecret,
         publishableKey: result.publishableKey,
