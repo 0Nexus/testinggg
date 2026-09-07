@@ -9,7 +9,7 @@ import {
   PlanTierDefinition,
   CarePackageDefinition
 } from '../data/pricingData';
-import { AirwallexSubscriptionCheckoutModal, AirwallexCheckoutItem } from './AirwallexSubscriptionCheckoutModal';
+import { StripeSubscriptionCheckoutModal, StripeCheckoutItem } from './StripeSubscriptionCheckoutModal';
 import {
   Shield,
   Zap,
@@ -55,9 +55,9 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
   const [calcAmount, setCalcAmount] = useState<number>(2500);
   const [calcTradeCertActive, setCalcTradeCertActive] = useState<boolean>(true);
 
-  // Airwallex Checkout Modal State
+  // Stripe Checkout Modal State
   const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState<boolean>(false);
-  const [selectedCheckoutItem, setSelectedCheckoutItem] = useState<AirwallexCheckoutItem | null>(null);
+  const [selectedCheckoutItem, setSelectedCheckoutItem] = useState<StripeCheckoutItem | null>(null);
 
   // Mutation / Action Loading States
   const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
@@ -68,7 +68,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
 
   const token = localStorage.getItem('tidy_secure_token');
 
-  // Trigger Airwallex Checkout for Plan Tiers
+  // Trigger Stripe Checkout for Plan Tiers
   const handleOpenPlanCheckout = (plan: PlanTierDefinition) => {
     if (plan.monthlyPriceGBP === 0) {
       // Free apprentice tier directly subscribes or opens checkout
@@ -132,7 +132,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
     }
   };
 
-  // Trigger Airwallex Checkout for Care Packages
+  // Trigger Stripe Checkout for Care Packages
   const handleOpenCareCheckout = (carePkg: CarePackageDefinition) => {
     setSelectedCheckoutItem({
       type: 'care_package',
@@ -147,7 +147,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
     setIsCheckoutModalOpen(true);
   };
 
-  // Trigger Airwallex Checkout for AI Credits
+  // Trigger Stripe Checkout for AI Credits
   const handleOpenCreditsCheckout = (packageType: 'standard' | 'bulk') => {
     const isBulk = packageType === 'bulk';
     setSelectedCheckoutItem({
@@ -169,7 +169,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
     setIsCheckoutModalOpen(true);
   };
 
-  // Trigger Airwallex Checkout for Escrow Pre-Purchase Pass
+  // Trigger Stripe Checkout for Escrow Pre-Purchase Pass
   const handleOpenEscrowPassCheckout = () => {
     setSelectedCheckoutItem({
       type: 'escrow_pass',
@@ -188,15 +188,15 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
     setIsCheckoutModalOpen(true);
   };
 
-  // Handle Airwallex Payment Success Callback
-  const handleAirwallexSuccess = (updatedSub: UserSubscription, receipt: any) => {
+  // Handle Stripe Payment Success Callback
+  const handleStripeSuccess = (updatedSub: UserSubscription, receipt: any) => {
     if (currentUser && onUserUpdate) {
       onUserUpdate({
         ...currentUser,
         subscription: updatedSub
       });
     }
-    setBannerMessage(`Payment of £${receipt?.amount?.toFixed(2) || '0.00'} GBP cleared via Airwallex! Transaction Ref: ${receipt?.transactionId || 'AWX-TX'}`);
+    setBannerMessage(`Payment of £${receipt?.amount?.toFixed(2) || '0.00'} GBP cleared via Stripe! Transaction Ref: ${receipt?.transactionId || 'STRIPE-TX'}`);
   };
 
   const currentSub = currentUser?.subscription;
@@ -326,28 +326,28 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
           )}
         </div>
 
-        {/* Airwallex Official Integrated Rail Banner */}
-        <div className="mt-6 bg-gradient-to-r from-[#003B7A]/40 via-slate-950/80 to-[#1E112A]/40 border border-[#0057B8]/40 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+        {/* Stripe Official Integrated Rail Banner */}
+        <div className="mt-6 bg-gradient-to-r from-[#635BFF]/30 via-slate-950/80 to-[#0A2540]/50 border border-[#635BFF]/40 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
           <div className="flex items-center space-x-3">
-            <div className="h-8 w-8 rounded-xl bg-gradient-to-tr from-[#0057B8] to-[#FF7F00] flex items-center justify-center text-white font-black text-[11px] shadow">
-              AWX
+            <div className="h-8 w-8 rounded-xl bg-[#635BFF] flex items-center justify-center text-white font-black text-sm shadow">
+              S
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <span className="font-black text-white">All Subscriptions Processed via Airwallex (UK) Limited</span>
+                <span className="font-black text-white">All Subscriptions Processed via Stripe Payments UK</span>
                 <span className="text-[9px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 px-1.5 py-0.2 rounded">
-                  FCA FRN: 901001
+                  FCA FRN: 900461
                 </span>
               </div>
               <p className="text-slate-400 text-[11px]">
-                Enjoy 0.4% UK BACS Direct Debit clearing, 3DS 2.0 multi-currency cards, and automated statutory tax invoices.
+                UK BACS Direct Debit, Apple Pay, Google Pay &amp; 3DS 2.0 multi-currency cards with automated statutory tax invoices.
               </p>
             </div>
           </div>
-          <div className="flex items-center space-x-3 font-mono text-[10px] text-cyan-300 shrink-0">
+          <div className="flex items-center space-x-3 font-mono text-[10px] text-indigo-300 shrink-0">
             <span className="flex items-center space-x-1"><Lock className="h-3 w-3" /><span>PCI-DSS Level 1</span></span>
             <span>•</span>
-            <span className="text-emerald-400 font-bold">Zero Decline BACS Rail</span>
+            <span className="text-emerald-400 font-bold">Direct Debit &amp; Card Rails</span>
           </div>
         </div>
 
@@ -851,7 +851,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
                         </>
                       ) : (
                         <>
-                          <span>Activate {pkg.name} via Airwallex</span>
+                          <span>Activate {pkg.name} via Stripe</span>
                           <ArrowRight className="h-4 w-4" />
                         </>
                       )}
@@ -1028,7 +1028,7 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
               ) : (
                 <>
                   <Zap className="h-4 w-4" />
-                  <span>Activate Escrow Pass (£500 via Airwallex)</span>
+                  <span>Activate Escrow Pass (£500 via Stripe)</span>
                 </>
               )}
             </button>
@@ -1063,13 +1063,13 @@ export const PricingSubscriptionPortal: React.FC<PricingSubscriptionPortalProps>
         </div>
       )}
 
-      {/* Airwallex Subscription Checkout Modal */}
-      <AirwallexSubscriptionCheckoutModal
+      {/* Stripe Subscription Checkout Modal */}
+      <StripeSubscriptionCheckoutModal
         isOpen={isCheckoutModalOpen}
         onClose={() => setIsCheckoutModalOpen(false)}
         item={selectedCheckoutItem}
         currentUser={currentUser}
-        onSubscriptionSuccess={handleAirwallexSuccess}
+        onSubscriptionSuccess={handleStripeSuccess}
       />
 
     </div>

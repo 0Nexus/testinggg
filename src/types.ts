@@ -499,3 +499,34 @@ export interface AirwallexWebhookEvent {
     };
   };
 }
+
+// Stripe Checkout Sessions & Subscriptions
+export type StripeCheckoutSessionStatus = 'pending' | 'succeeded' | 'failed' | 'expired';
+
+export interface StripeCheckoutSession {
+  id: string;
+  paymentIntentId?: string;
+  clientSecret?: string;
+  checkoutUrl?: string;
+  itemType: 'plan' | 'care_package' | 'credits' | 'escrow_pass';
+  itemId: string;
+  planName: string;
+  billingInterval: 'monthly' | 'annual';
+  amount: number;
+  currency: string;
+  customerEmail: string;
+  customerName: string;
+  companyName?: string;
+  companyVatNumber?: string;
+  billingAddress?: string;
+  status: StripeCheckoutSessionStatus;
+  stripeStatus?: string;
+  publishableKey?: string;
+  successUrl: string;
+  cancelUrl: string;
+  createdAt: string;
+  completedAt?: string;
+  gatewayRef?: string;
+  paymentMethodUsed?: string;
+  webhookDelivered?: boolean;
+}

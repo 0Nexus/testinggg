@@ -51,7 +51,7 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
   let mailgunKey = (process.env.MAILGUN_API_KEY || '').trim();
   let mailgunDomain = (process.env.MAILGUN_DOMAIN || '').trim();
   let emailApiKey = (process.env.EMAIL_API_KEY || '').trim();
-  let fromEmail = (process.env.EMAIL_FROM || process.env.FROM_EMAIL || '').trim();
+  let fromEmail = (process.env.RESEND_FROM || process.env.EMAIL_FROM || process.env.FROM_EMAIL || '').trim();
 
   let source: EmailConfig['source'] = 'none';
 
@@ -62,15 +62,16 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
   // If no env keys found, check Google Secret Manager
   if (!resendKey && !sendgridKey && !postmarkKey && !mailgunKey && !emailApiKey) {
     try {
-      checkedSecrets.push('RESEND_API_KEY', 'SENDGRID_API_KEY', 'POSTMARK_SERVER_TOKEN', 'MAILGUN_API_KEY', 'EMAIL_API_KEY', 'EMAIL_FROM');
+      checkedSecrets.push('RESEND_API_KEY', 'SENDGRID_API_KEY', 'POSTMARK_SERVER_TOKEN', 'MAILGUN_API_KEY', 'EMAIL_API_KEY', 'EMAIL_FROM', 'RESEND_FROM');
       
-      const [resendRes, sendgridRes, postmarkRes, mailgunRes, genericRes, fromRes] = await Promise.all([
+      const [resendRes, sendgridRes, postmarkRes, mailgunRes, genericRes, fromRes, resendFromRes] = await Promise.all([
         fetchSecretFromGCP('RESEND_API_KEY'),
         fetchSecretFromGCP('SENDGRID_API_KEY'),
         fetchSecretFromGCP('POSTMARK_SERVER_TOKEN'),
         fetchSecretFromGCP('MAILGUN_API_KEY'),
         fetchSecretFromGCP('EMAIL_API_KEY'),
-        fetchSecretFromGCP('EMAIL_FROM')
+        fetchSecretFromGCP('EMAIL_FROM'),
+        fetchSecretFromGCP('RESEND_FROM')
       ]);
 
       if (resendRes.value) resendKey = resendRes.value;
@@ -78,7 +79,8 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
       if (postmarkRes.value) postmarkKey = postmarkRes.value;
       if (mailgunRes.value) mailgunKey = mailgunRes.value;
       if (genericRes.value) emailApiKey = genericRes.value;
-      if (fromRes.value && !fromEmail) fromEmail = fromRes.value;
+      if (!fromEmail && resendFromRes.value) fromEmail = resendFromRes.value;
+      if (!fromEmail && fromRes.value) fromEmail = fromRes.value;
 
       if (resendKey || sendgridKey || postmarkKey || mailgunKey || emailApiKey) {
         source = 'secret_manager';
@@ -86,6 +88,16 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
     } catch (err: any) {
       console.warn('[EMAIL SERVICE] Secret Manager lookup error:', err?.message || err);
     }
+  } else if (!fromEmail) {
+    // If API key was in environment, check Secret Manager specifically for custom sender addresses
+    try {
+      const [fromRes, resendFromRes] = await Promise.all([
+        fetchSecretFromGCP('EMAIL_FROM'),
+        fetchSecretFromGCP('RESEND_FROM')
+      ]);
+      if (resendFromRes.value) fromEmail = resendFromRes.value;
+      else if (fromRes.value) fromEmail = fromRes.value;
+    } catch (_) {}
   }
 
   // Determine active provider
@@ -95,39 +107,37 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
   if (resendKey) {
     provider = 'resend';
     apiKey = resendKey;
-    if (!fromEmail) fromEmail = 'Tidy Corporation <onboarding@resend.dev>';
   } else if (sendgridKey) {
     provider = 'sendgrid';
     apiKey = sendgridKey;
-    if (!fromEmail) fromEmail = 'Tidy Corporation <no-reply@tidycorp.co.uk>';
   } else if (postmarkKey) {
     provider = 'postmark';
     apiKey = postmarkKey;
-    if (!fromEmail) fromEmail = 'no-reply@tidycorp.co.uk';
   } else if (mailgunKey) {
     provider = 'mailgun';
     apiKey = mailgunKey;
-    if (!fromEmail) fromEmail = `Tidy Corporation <no-reply@${mailgunDomain || 'tidycorp.co.uk'}>`;
   } else if (emailApiKey) {
     // If generic key is provided, infer by format (Resend keys start with 're_', SendGrid with 'SG.')
     if (emailApiKey.startsWith('re_')) {
       provider = 'resend';
       apiKey = emailApiKey;
-      if (!fromEmail) fromEmail = 'Tidy Corporation <onboarding@resend.dev>';
     } else if (emailApiKey.startsWith('SG.')) {
       provider = 'sendgrid';
       apiKey = emailApiKey;
-      if (!fromEmail) fromEmail = 'Tidy Corporation <no-reply@tidycorp.co.uk>';
     } else {
       provider = 'resend';
       apiKey = emailApiKey;
-      if (!fromEmail) fromEmail = 'Tidy Corporation <onboarding@resend.dev>';
     }
     source = source || 'secret_manager';
   }
 
-  if (!fromEmail) {
+  // Sanitize and ensure verified domain sender address
+  // Disallow onboarding@resend.dev because it blocks delivery to any email other than the account owner
+  if (!fromEmail || fromEmail.includes('onboarding@resend.dev') || fromEmail.includes('@resend.dev')) {
     fromEmail = 'Tidy Corporation <no-reply@tidycorp.co.uk>';
+  } else if (!fromEmail.includes('<') && fromEmail.includes('@')) {
+    // Format plain email like "no-reply@tidycorp.co.uk" into "Tidy Corporation <no-reply@tidycorp.co.uk>"
+    fromEmail = `Tidy Corporation <${fromEmail.trim()}>`;
   }
 
   const isConfigured = Boolean(provider !== 'none' && apiKey);

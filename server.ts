@@ -58,6 +58,15 @@ import {
   getResolvedEmailConfig
 } from './src/lib/emailServer.js';
 import {
+  getResolvedStripeConfig,
+  getStripeClient,
+  createStripeSubscriptionSession,
+  applyStripeSubscriptionToUser,
+  verifyAndConfirmStripePayment,
+  saveStripeSessionToDB,
+  getStripeSessionFromDB
+} from './src/lib/stripeServer.js';
+import {
   RenovationProject,
   MCPRule,
   GatewayConfig,
@@ -318,20 +327,68 @@ async function startServer() {
   // Raw body handler for Stripe webhooks BEFORE json middleware
   app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
     const sig = req.headers['stripe-signature'];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    const stripeConfig = await getResolvedStripeConfig();
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || stripeConfig.webhookSecret;
 
     if (!webhookSecret || !sig) {
       return res.status(400).json({ received: true, note: 'Webhook received. Configure STRIPE_WEBHOOK_SECRET for live signature verification.' });
     }
 
     try {
-      const stripe = getStripe();
+      const stripe = (await getStripeClient()) || getStripe();
       if (!stripe) return res.status(500).json({ error: 'Stripe client uninitialized' });
 
       const event = stripe.webhooks.constructEvent(req.body, sig as string, webhookSecret);
       if (event.type === 'payment_intent.succeeded') {
         const paymentIntent = event.data.object as Stripe.PaymentIntent;
         console.log(`Stripe PaymentIntent ${paymentIntent.id} succeeded for amount £${paymentIntent.amount / 100}`);
+
+        // Auto-provision user subscription if metadata exists
+        const meta = paymentIntent.metadata || {};
+        if (meta.itemId && meta.customerEmail) {
+          try {
+            await applyStripeSubscriptionToUser({
+              customerEmail: meta.customerEmail,
+              customerName: meta.customerName || 'Valued Subscriber',
+              itemType: (meta.itemType as any) || 'plan',
+              itemId: meta.itemId,
+              billingInterval: (meta.billingInterval as any) || 'monthly',
+              amount: paymentIntent.amount / 100,
+              currency: paymentIntent.currency.toUpperCase(),
+              paymentMethodUsed: 'Stripe Webhook Verified Payment',
+              gatewayRef: paymentIntent.id,
+              companyName: meta.companyName,
+              companyVatNumber: meta.companyVatNumber
+            });
+            console.log(`[STRIPE WEBHOOK] Successfully auto-provisioned subscription for ${meta.customerEmail}`);
+          } catch (provErr: any) {
+            console.error('[STRIPE WEBHOOK PROVISIONING ERROR]:', provErr);
+          }
+        }
+      } else if (event.type === 'checkout.session.completed') {
+        const session = event.data.object as Stripe.Checkout.Session;
+        const meta = session.metadata || {};
+        const email = session.customer_email || (meta.customerEmail as string);
+        if (meta.itemId && email) {
+          try {
+            await applyStripeSubscriptionToUser({
+              customerEmail: email,
+              customerName: (meta.customerName as string) || session.customer_details?.name || 'Valued Subscriber',
+              itemType: (meta.itemType as any) || 'plan',
+              itemId: meta.itemId,
+              billingInterval: (meta.billingInterval as any) || 'monthly',
+              amount: (session.amount_total || 0) / 100,
+              currency: (session.currency || 'GBP').toUpperCase(),
+              paymentMethodUsed: 'Stripe Checkout Session',
+              gatewayRef: session.id,
+              companyName: meta.companyName as string,
+              companyVatNumber: meta.companyVatNumber as string
+            });
+            console.log(`[STRIPE WEBHOOK] Successfully auto-provisioned subscription via checkout.session.completed for ${email}`);
+          } catch (provErr: any) {
+            console.error('[STRIPE WEBHOOK CHECKOUT ERROR]:', provErr);
+          }
+        }
       }
       res.json({ received: true });
     } catch (err: any) {
@@ -1122,7 +1179,182 @@ async function startServer() {
     };
   }
 
-  // 1. POST /api/create-checkout (Your Website -> Your Backend -> Airwallex API -> Returns checkout details)
+  // --- STRIPE SUBSCRIPTION PAYMENT HANDLING ---
+
+  // Diagnostic endpoint to check Stripe configuration status
+  app.get('/api/stripe/config-status', async (req: Request, res: Response) => {
+    try {
+      const config = await getResolvedStripeConfig();
+      res.json({
+        success: true,
+        configured: config.isConfigured,
+        source: config.source,
+        hasPublishableKey: Boolean(config.publishableKey),
+        publishableKey: config.publishableKey || '',
+        hasSecretKey: Boolean(config.secretKey),
+        hasWebhookSecret: Boolean(config.webhookSecret),
+        diagnostics: config.diagnostics
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Error checking Stripe config status' });
+    }
+  });
+
+  // Dedicated Stripe Subscription Intent Creator
+  app.post('/api/stripe/create-subscription-intent', async (req: Request, res: Response) => {
+    try {
+      const {
+        planId,
+        itemId = planId,
+        itemType = 'plan',
+        billingInterval = 'monthly',
+        amount,
+        currency = 'GBP',
+        customerEmail,
+        customerName,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        successUrl = '/?payment_status=success',
+        cancelUrl = '/?payment_status=cancelled'
+      } = req.body;
+
+      const authHeader = req.headers.authorization;
+      let authenticatedUser: any = null;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          authenticatedUser = jwt.verify(authHeader.split(' ')[1], JWT_SECRET);
+        } catch (e) {}
+      }
+
+      const emailToUse = (customerEmail || authenticatedUser?.email || 'user@tidycorp.co.uk').toLowerCase().trim();
+      const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
+
+      const result = await createStripeSubscriptionSession({
+        itemId,
+        itemType,
+        billingInterval,
+        amount,
+        currency,
+        customerEmail: emailToUse,
+        customerName: nameToUse,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        successUrl,
+        cancelUrl
+      });
+
+      res.status(201).json({
+        gateway: 'stripe',
+        ...result
+      });
+    } catch (err: any) {
+      console.error('[STRIPE SUBSCRIPTION INTENT ERROR]:', err);
+      res.status(500).json({ error: err?.message || 'Failed to create Stripe subscription intent' });
+    }
+  });
+
+  // Dedicated Stripe Subscription Confirmation
+  app.post('/api/stripe/confirm-subscription', async (req: Request, res: Response) => {
+    try {
+      const {
+        paymentIntentId,
+        checkoutId = paymentIntentId,
+        itemId,
+        itemType,
+        billingInterval,
+        amount,
+        currency,
+        customerEmail,
+        customerName,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        paymentMethod = 'card'
+      } = req.body;
+
+      const intentIdToUse = paymentIntentId || checkoutId;
+      if (!intentIdToUse) {
+        return res.status(400).json({ error: 'Missing paymentIntentId or checkoutId parameter' });
+      }
+
+      const result = await verifyAndConfirmStripePayment({
+        paymentIntentId: intentIdToUse,
+        itemId,
+        itemType,
+        billingInterval,
+        amount,
+        currency,
+        customerEmail,
+        customerName,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        paymentMethod
+      });
+
+      res.json({
+        success: true,
+        message: `Subscription successfully verified and activated via Stripe!`,
+        subscription: result.updatedSub,
+        transaction: result.transaction,
+        receipt: result.receipt
+      });
+    } catch (err: any) {
+      console.error('[STRIPE CONFIRMATION ERROR]:', err);
+      res.status(500).json({ error: err?.message || 'Failed to confirm Stripe subscription' });
+    }
+  });
+
+  // Stripe complete-checkout alias
+  app.post('/api/stripe/complete-checkout', async (req: Request, res: Response) => {
+    try {
+      const {
+        paymentIntentId,
+        checkoutId = paymentIntentId,
+        itemId,
+        itemType,
+        billingInterval,
+        amount,
+        currency,
+        customerEmail,
+        customerName,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        paymentMethod = 'card'
+      } = req.body;
+
+      const intentIdToUse = paymentIntentId || checkoutId;
+      const result = await verifyAndConfirmStripePayment({
+        paymentIntentId: intentIdToUse,
+        itemId,
+        itemType,
+        billingInterval,
+        amount,
+        currency,
+        customerEmail,
+        customerName,
+        companyName,
+        companyVatNumber,
+        billingAddress,
+        paymentMethod
+      });
+
+      res.json({
+        success: true,
+        message: `Subscription successfully completed via Stripe!`,
+        subscription: result.updatedSub,
+        transaction: result.transaction,
+        receipt: result.receipt
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to complete Stripe checkout' });
+    }
+  });
+
+  // 1. POST /api/create-checkout (Default subscription checkout handler, switched to Stripe)
   app.post('/api/create-checkout', async (req: Request, res: Response) => {
     try {
       const {
@@ -1152,105 +1384,38 @@ async function startServer() {
       const emailToUse = (customerEmail || authenticatedUser?.email || 'user@tidycorp.co.uk').toLowerCase().trim();
       const nameToUse = customerName || authenticatedUser?.name || 'Valued Subscriber';
 
-      const planSpecs = getPlanSpecs();
-      let calculatedAmount = Number(inputAmount) || 0;
-      let planName = 'Airwallex Plan';
-
-      if (itemType === 'plan') {
-        const spec = (planSpecs as any)[itemId] || planSpecs.journeyman_pro;
-        planName = spec.name;
-        if (!inputAmount && inputAmount !== 0) {
-          calculatedAmount = billingInterval === 'annual' ? spec.annualPriceGBP : spec.monthlyPriceGBP;
-        }
-      } else if (itemType === 'care_package') {
-        const carePrices: Record<string, number> = { tidy_essentials: 19, tidy_homecare: 39, tidy_safecover: 79 };
-        calculatedAmount = inputAmount || carePrices[itemId] || 29;
-        planName = `Care Package: ${itemId.replace('tidy_', 'Tidy ')}`;
-      } else if (itemType === 'credits') {
-        calculatedAmount = itemId === 'bulk' ? 700 : 10;
-        planName = itemId === 'bulk' ? 'Bulk AI Credits (1.4M)' : 'Standard AI Credits (20k)';
-      } else if (itemType === 'escrow_pass') {
-        calculatedAmount = 500;
-        planName = 'Escrow Pre-Purchase Growth Pass (£25k)';
-      }
-
-      const config = await getResolvedAirwallexConfig();
-      if (!config.isConfigured) {
-        const diag = config.diagnostics;
-        return res.status(400).json({
-          success: false,
-          error: `Airwallex API credentials could not be loaded: ${diag?.statusMessage || 'Credentials not configured'}`,
-          reasonCategory: diag?.reasonCategory || 'not_configured',
-          gcpProjectId: diag?.gcpProjectId || null,
-          diagnostics: diag,
-          configured: false
-        });
-      }
-
-      // Create real PaymentIntent with Airwallex API
-      const merchantOrderId = `tidy_sub_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
-      const returnUrl = `${process.env.APP_URL || ''}/?payment_status=success`;
-
-      const intent = await createAirwallexPaymentIntent({
-        amount: calculatedAmount,
-        currency: (currency || 'GBP').toUpperCase(),
-        merchantOrderId,
-        descriptor: 'Tidy Corporation Ltd',
-        metadata: {
-          itemId: String(itemId),
-          itemType: String(itemType),
-          billingInterval: String(billingInterval),
-          customerEmail: emailToUse,
-          customerName: nameToUse
-        },
-        customer: {
-          email: emailToUse,
-          first_name: nameToUse.split(' ')[0] || 'Customer',
-          last_name: nameToUse.split(' ').slice(1).join(' ') || 'Tidy'
-        },
-        returnUrl
-      });
-
-      const checkoutUrl = `/checkout/airwallex-billing?checkout_id=${intent.id}&client_secret=${intent.client_secret}`;
-
-      const session: AirwallexCheckoutSession = {
-        id: intent.id,
-        paymentIntentId: intent.id,
-        clientSecret: intent.client_secret,
-        checkoutUrl,
-        itemType,
+      const result = await createStripeSubscriptionSession({
         itemId,
-        planName,
+        itemType,
         billingInterval,
-        amount: calculatedAmount,
+        amount: inputAmount,
         currency,
         customerEmail: emailToUse,
         customerName: nameToUse,
-        companyName: companyName || '',
-        companyVatNumber: companyVatNumber || '',
-        billingAddress: billingAddress || 'United Kingdom',
-        status: 'pending',
-        airwallexStatus: intent.status,
-        airwallexEnv: config.env,
+        companyName,
+        companyVatNumber,
+        billingAddress,
         successUrl,
-        cancelUrl,
-        createdAt: new Date().toISOString()
-      };
-
-      await saveAirwallexSessionToDB(session);
+        cancelUrl
+      });
 
       res.status(201).json({
         success: true,
-        checkoutUrl,
-        checkoutId: session.id,
-        paymentIntentId: intent.id,
-        clientSecret: intent.client_secret,
-        airwallexEnv: config.env,
-        session
+        gateway: 'stripe',
+        checkoutUrl: `/checkout/stripe-billing?intent_id=${result.paymentIntentId}`,
+        checkoutId: result.checkoutId,
+        paymentIntentId: result.paymentIntentId,
+        clientSecret: result.clientSecret,
+        publishableKey: result.publishableKey,
+        amount: result.amount,
+        currency: result.currency,
+        planName: result.planName,
+        isLive: result.isLive,
+        diagnostics: result.diagnostics
       });
     } catch (err: any) {
-      console.error('Error creating Airwallex checkout:', err);
-      res.status(500).json({ error: err?.message || 'Failed to create Airwallex billing checkout session' });
+      console.error('Error creating Stripe subscription checkout:', err);
+      res.status(500).json({ error: err?.message || 'Failed to create Stripe billing checkout session' });
     }
   });
 
