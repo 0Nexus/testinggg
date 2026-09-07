@@ -11,6 +11,8 @@ import ukLoftExtensionImg from '../assets/images/uk_loft_extension_1786447218269
 import verifiedBuilderImg from '../assets/images/verified_uk_builder_1786446320820.jpg';
 import dreamWallImg from '../assets/images/dream_wall_livingroom_1786446336669.jpg';
 import escrowSafetyImg from '../assets/images/escrow_payment_safety_1786446346602.jpg';
+import homeownerRenovationImg from '../assets/images/homeowner_peace_renovation_1788808638455.jpg';
+import contractorBusinessImg from '../assets/images/contractor_business_owner_1788808654011.jpg';
 
 import {
   Shield,
@@ -53,7 +55,9 @@ import {
   Sliders,
   DollarSign,
   Sun,
-  Moon
+  Moon,
+  Home,
+  Briefcase
 } from 'lucide-react';
 
 interface LandingPageProps {
@@ -386,6 +390,213 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </span>
               </div>
             </div>
+          </div>
+        </section>
+
+        {/* TWO-SIDED MARKETPLACE SECTION: FOR HOMEOWNERS & CONTRACTORS / BUSINESS OWNERS */}
+        <section className="space-y-10">
+          <div className="text-center max-w-3xl mx-auto space-y-3">
+            <div className="inline-flex items-center space-x-2 bg-[#0057B8]/20 border border-[#0057B8]/50 text-cyan-300 px-4 py-1.5 rounded-full text-xs font-mono font-bold uppercase tracking-wider">
+              <Users className="h-4 w-4 text-cyan-400" />
+              <span>Two Sides of One Trust Ecosystem</span>
+            </div>
+            <h2 className="text-2xl sm:text-4xl font-black text-white">
+              Built for Homeowners. Engineered for Contractors.
+            </h2>
+            <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
+              Renovations only succeed when both sides feel completely protected. Tidy Corporation eliminates financial risk for property owners while guaranteeing immediate, dispute-free cashflow for trade business owners.
+            </p>
+          </div>
+
+          {/* Divided in 2 Section Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+            
+            {/* 1. FOR HOMEOWNERS & PROPERTY OWNERS */}
+            <div className="bg-[#0F172A] border border-slate-800 hover:border-cyan-500/50 rounded-3xl p-6 sm:p-8 flex flex-col justify-between shadow-2xl transition-all duration-300 group">
+              <div className="space-y-6">
+                {/* Visual Picture with Realistic Badge */}
+                <div className="relative h-64 sm:h-72 rounded-2xl overflow-hidden border border-slate-800">
+                  <img
+                    src={homeownerRenovationImg}
+                    alt="Happy UK Homeowner in modern renovated living space"
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105 brightness-95"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#0F172A] via-transparent to-transparent"></div>
+                  <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-mono font-bold flex items-center space-x-1.5 shadow-lg">
+                    <Home className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>For Homeowners &amp; Landlords</span>
+                  </div>
+                  <div className="absolute bottom-3 left-3 right-3 bg-[#0A1128]/85 backdrop-blur-md p-2.5 rounded-xl border border-slate-700/80 text-xs font-mono text-slate-200">
+                    <span className="text-emerald-400 font-bold">100% Capital Protection:</span> Funds only release upon your verified sign-off.
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-2xl font-black text-white flex items-center space-x-2">
+                    <span>Zero-Risk Renovation Peace of Mind</span>
+                  </h3>
+                  <p className="text-slate-300 text-sm leading-relaxed">
+                    Never hand over large unbacked cash deposits again. Retain complete control of your budget with milestone-gated escrow, AI defect triage, and verified UK tradespeople.
+                  </p>
+                </div>
+
+                {/* Key Benefits for Homeowners */}
+                <div className="space-y-3 pt-2 font-sans">
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shrink-0 mt-0.5">
+                      <Shield className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">Ring-Fenced Milestone Escrow</strong>
+                      <span>Your funds sit in UK custodial accounts. Payments are only released stage-by-stage after you review and approve work.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 shrink-0 mt-0.5">
+                      <Bot className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">AI Emergency Diagnosis &amp; Urgent Triage</strong>
+                      <span>Snap photos of leaks, cracks, or damp for instant triage, statutory severity scores (Awaab's Law ready), and fair repair cost ranges.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 shrink-0 mt-0.5">
+                      <CheckCircle2 className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">Vetted &amp; Insured UK Trades</strong>
+                      <span>Direct access to contractors with verified Public Liability insurance, trade credentials, and zero cowboy builder risk.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-400 shrink-0 mt-0.5">
+                      <FileText className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">Building Safety Act Golden Thread</strong>
+                      <span>All certificates, milestone photo sign-offs, and warranties are compiled into a permanent digital building safety passport.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Button for Homeowners */}
+              <div className="pt-8 border-t border-slate-800/80 mt-6 flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => handleFeatureAccess('urgent_ai')}
+                  className="flex-1 bg-gradient-to-r from-[#0057B8] to-cyan-600 hover:from-blue-600 hover:to-cyan-500 text-white font-black py-3.5 px-5 rounded-2xl text-xs sm:text-sm shadow-lg shadow-blue-500/20 transition-all flex items-center justify-center space-x-2"
+                >
+                  <Home className="h-4 w-4" />
+                  <span>Start Protected Home Project</span>
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => handleFeatureAccess('compliance')}
+                  className="px-4 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all"
+                >
+                  Safety Standards
+                </button>
+              </div>
+            </div>
+
+            {/* 2. FOR CONTRACTORS & TRADE BUSINESS OWNERS */}
+            <div className="bg-[#0F172A] border border-slate-800 hover:border-amber-500/50 rounded-3xl p-6 sm:p-8 flex flex-col justify-between shadow-2xl transition-all duration-300 group">
+              <div className="space-y-6">
+                {/* Visual Picture with Realistic Badge */}
+                <div className="relative h-64 sm:h-72 rounded-2xl overflow-hidden border border-slate-800">
+                  <img
+                    src={contractorBusinessImg}
+                    alt="Professional UK Contractor and trade business owner with digital tablet on site"
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105 brightness-95"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#0F172A] via-transparent to-transparent"></div>
+                  <div className="absolute top-3 left-3 bg-[#0A1128]/90 backdrop-blur-md text-[#FF7F00] border border-amber-500/30 px-3 py-1 rounded-full text-xs font-mono font-bold flex items-center space-x-1.5 shadow-lg">
+                    <Briefcase className="h-3.5 w-3.5 text-[#FF7F00]" />
+                    <span>For Contractors &amp; Trade Businesses</span>
+                  </div>
+                  <div className="absolute bottom-3 left-3 right-3 bg-[#0A1128]/85 backdrop-blur-md p-2.5 rounded-xl border border-slate-700/80 text-xs font-mono text-slate-200">
+                    <span className="text-[#FF7F00] font-bold">Guaranteed Cashflow:</span> Client funds are locked before you purchase materials.
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-2xl font-black text-white flex items-center space-x-2">
+                    <span>Guaranteed Cashflow &amp; Business Growth</span>
+                  </h3>
+                  <p className="text-slate-300 text-sm leading-relaxed">
+                    Stop wasting hours chasing late payments and unpaid invoices. Secure pre-funded milestones, win bigger contracts with trust, and automate quotes with AI.
+                  </p>
+                </div>
+
+                {/* Key Benefits for Contractors */}
+                <div className="space-y-3 pt-2 font-sans">
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 shrink-0 mt-0.5">
+                      <Lock className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">No More Chasing Late Invoices</strong>
+                      <span>Customer deposits 100% of milestone funds upfront into escrow. Upon photographic sign-off, funds disburse straight to your bank.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 shrink-0 mt-0.5">
+                      <Sparkles className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">AI Construction Estimator &amp; Quoting</strong>
+                      <span>Generate itemised, professional quotes and trade schedules from room dimensions or voice notes in under 60 seconds.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shrink-0 mt-0.5">
+                      <Scale className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">Dispute-Proof Photographic Milestones</strong>
+                      <span>Timestamped, geo-tagged photo evidence protects your profit margins and eliminates disputes over variations or extras.</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start space-x-3 text-xs sm:text-sm text-slate-300">
+                    <div className="p-1 rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-400 shrink-0 mt-0.5">
+                      <Building2 className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <strong className="text-white font-bold block">Multi-Gateway Trade Operating Suite</strong>
+                      <span>Integrated with Stripe and Airwallex for low-fee merchant processing, UK VAT invoices, sub-contractor accounts, and MCP rules.</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Button for Contractors */}
+              <div className="pt-8 border-t border-slate-800/80 mt-6 flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => handleFeatureAccess('quoting_agent')}
+                  className="flex-1 bg-[#FF7F00] hover:bg-amber-600 text-slate-950 font-black py-3.5 px-5 rounded-2xl text-xs sm:text-sm shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center space-x-2"
+                >
+                  <Sparkles className="h-4 w-4 fill-slate-950 text-slate-950" />
+                  <span>Try AI Quoting Agent</span>
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => handleFeatureAccess('pricing')}
+                  className="px-4 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-bold transition-all"
+                >
+                  Contractor Plans
+                </button>
+              </div>
+            </div>
+
           </div>
         </section>
 

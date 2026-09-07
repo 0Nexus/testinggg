@@ -2655,6 +2655,64 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
     res.json(txs);
   });
 
+  // --- STATIC ASSETS SERVING & STRICT MIME TYPE ENFORCEMENT ---
+  // Ensure that any request for /assets/* returns the correct MIME type (e.g. text/css, application/javascript)
+  // and NEVER falls through to Vite's SPA handler or index.html (which triggers "Refused to apply style because MIME type is text/html").
+  app.use('/assets', (req: Request, res: Response, next: NextFunction) => {
+    const assetName = req.path.replace(/^\//, ''); // e.g. "index-DsE3mWtC.css"
+    const distAssetsPath = path.join(process.cwd(), 'dist', 'assets');
+    const targetFilePath = path.join(distAssetsPath, assetName);
+
+    // If the exact file exists on disk in dist/assets, serve it with proper content-type
+    if (fs.existsSync(targetFilePath) && fs.statSync(targetFilePath).isFile()) {
+      if (assetName.endsWith('.css')) res.type('text/css');
+      else if (assetName.endsWith('.js') || assetName.endsWith('.mjs')) res.type('application/javascript');
+      else if (assetName.endsWith('.svg')) res.type('image/svg+xml');
+      else if (assetName.endsWith('.png')) res.type('image/png');
+      else if (assetName.endsWith('.jpg') || assetName.endsWith('.jpeg')) res.type('image/jpeg');
+      else if (assetName.endsWith('.webp')) res.type('image/webp');
+      else if (assetName.endsWith('.woff2')) res.type('font/woff2');
+      else if (assetName.endsWith('.woff')) res.type('font/woff');
+      
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.sendFile(targetFilePath);
+    }
+
+    // If a CSS file was requested but not found (stale build hash or cache mismatch)
+    if (assetName.endsWith('.css')) {
+      if (fs.existsSync(distAssetsPath)) {
+        const files = fs.readdirSync(distAssetsPath);
+        const cssFile = files.find(f => f.endsWith('.css') && f.startsWith('index-')) || files.find(f => f.endsWith('.css'));
+        if (cssFile) {
+          console.warn(`[ASSET RESILIENCE] Stale or unhashed CSS '${assetName}' requested. Serving latest '${cssFile}'`);
+          res.type('text/css');
+          res.setHeader('Cache-Control', 'no-cache');
+          return res.sendFile(path.join(distAssetsPath, cssFile));
+        }
+      }
+      // If no CSS bundle exists on disk, return empty CSS with 404 - NEVER return HTML
+      return res.status(404).type('text/css').send('/* CSS asset not found */');
+    }
+
+    // If a JS file was requested but not found
+    if (assetName.endsWith('.js') || assetName.endsWith('.mjs')) {
+      if (fs.existsSync(distAssetsPath)) {
+        const files = fs.readdirSync(distAssetsPath);
+        const jsFile = files.find(f => f.endsWith('.js') && f.startsWith('index-')) || files.find(f => f.endsWith('.js'));
+        if (jsFile) {
+          console.warn(`[ASSET RESILIENCE] Stale or unhashed JS '${assetName}' requested. Serving latest '${jsFile}'`);
+          res.type('application/javascript');
+          res.setHeader('Cache-Control', 'no-cache');
+          return res.sendFile(path.join(distAssetsPath, jsFile));
+        }
+      }
+      return res.status(404).type('application/javascript').send('/* JS asset not found */');
+    }
+
+    // For any other unrecognized /assets/* request, return 404 text to avoid returning text/html
+    return res.status(404).type('text/plain').send('Asset not found');
+  });
+
   // VITE MIDDLEWARE / STATIC SERVING
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -2666,6 +2724,13 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req: Request, res: Response) => {
+      // Guard: Never serve index.html for missing assets or files with extensions
+      if (req.path.startsWith('/assets/') || /\.[a-zA-Z0-9]+$/.test(req.path)) {
+        return res.status(404).send('Asset not found');
+      }
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
