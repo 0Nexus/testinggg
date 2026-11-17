@@ -2,13 +2,28 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import { fetchSecretFromGCP } from './airwallexServer.js';
+import { fetchSecretFromGCP, getGcpProjectId } from './airwallexServer.js';
 
 const DEV_SECRET_FILE = path.join(process.cwd(), '.env.jwt.local');
 const PASSWORD_CIPHER_PREFIX = 'jwt_enc_v1';
 const BCRYPT_ROUNDS = 10;
 
 let resolvedJwtSecretCache: string | null = null;
+
+function getFirebaseProjectIdForSecret(): string | null {
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (parsed?.projectId && typeof parsed.projectId === 'string') {
+        return parsed.projectId.trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 function readOrCreateDevJwtSecret(): string {
   try {
@@ -32,7 +47,7 @@ function readOrCreateDevJwtSecret(): string {
  *
  * Resolution priority:
  * 1. process.env.JWT_SECRET
- * 2. Google Secret Manager secret 'JWT_SECRET'
+ * 2. Google Secret Manager secret 'JWT_SECRET' (across runtime & Firebase GCP projects)
  * 3. In development: persistent local key file (.env.jwt.local, gitignored)
  * 4. In production: throws fatal security error if neither env nor Secret Manager provides JWT_SECRET
  */
@@ -48,9 +63,20 @@ export async function resolveJwtSecretAsync(): Promise<string> {
   }
 
   try {
-    const gcpSecret = await fetchSecretFromGCP('JWT_SECRET', { optional: true });
-    if (gcpSecret.value && gcpSecret.value.trim()) {
-      resolvedJwtSecretCache = gcpSecret.value.trim();
+    const candidateProjects = new Set<string>();
+    const autoProj = await getGcpProjectId();
+    if (autoProj.projectId) candidateProjects.add(autoProj.projectId);
+    const fbProj = getFirebaseProjectIdForSecret();
+    if (fbProj) candidateProjects.add(fbProj);
+
+    const results = await Promise.all(
+      Array.from(candidateProjects).map(projectId =>
+        fetchSecretFromGCP('JWT_SECRET', { optional: true, projectId })
+      )
+    );
+    const matched = results.find(r => r.value && r.value.trim());
+    if (matched?.value) {
+      resolvedJwtSecretCache = matched.value.trim();
       return resolvedJwtSecretCache;
     }
   } catch {

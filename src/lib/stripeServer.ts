@@ -7,14 +7,10 @@ import {
   saveUser,
   saveTransactionToDB,
   getGatewayConfigFromDB,
-  initFirestoreDB,
+  saveStripeSessionRecordToDB,
+  getStripeSessionRecordFromDB,
   StoredUser
 } from './firestoreServer.js';
-import {
-  doc,
-  setDoc,
-  getDoc
-} from 'firebase/firestore';
 import {
   UserSubscription,
   PaymentTransaction,
@@ -192,47 +188,12 @@ export const getStripePlanSpecs = () => ({
   enterprise_os: { name: 'Enterprise OS', monthlyPriceGBP: 399, annualPriceGBP: 3990, credits: 500000, fee: 'Pre-Committed' }
 });
 
-// Memory cache for Stripe checkout sessions
-let memoryStripeSessions: StripeCheckoutSession[] = [];
-
 export async function saveStripeSessionToDB(session: StripeCheckoutSession): Promise<StripeCheckoutSession> {
-  try {
-    const firestore = await initFirestoreDB();
-    if (firestore) {
-      await setDoc(doc(firestore, 'stripeCheckoutSessions', session.id), session);
-    }
-  } catch (e) {
-    console.log('saveStripeSessionToDB Firestore fallback to memory');
-  }
-
-  const existingIdx = memoryStripeSessions.findIndex(s => s.id === session.id);
-  if (existingIdx >= 0) {
-    memoryStripeSessions[existingIdx] = session;
-  } else {
-    memoryStripeSessions.unshift(session);
-  }
-  return session;
+  return saveStripeSessionRecordToDB(session);
 }
 
 export async function getStripeSessionFromDB(sessionId: string): Promise<StripeCheckoutSession | null> {
-  try {
-    const firestore = await initFirestoreDB();
-    if (firestore) {
-      const snap = await getDoc(doc(firestore, 'stripeCheckoutSessions', sessionId));
-      if (snap.exists()) {
-        const session = snap.data() as StripeCheckoutSession;
-        const idx = memoryStripeSessions.findIndex(s => s.id === sessionId);
-        if (idx >= 0) memoryStripeSessions[idx] = session;
-        else memoryStripeSessions.unshift(session);
-        return session;
-      }
-    }
-  } catch (e) {
-    console.log('getStripeSessionFromDB Firestore fallback to memory');
-  }
-
-  const found = memoryStripeSessions.find(s => s.id === sessionId);
-  return found || null;
+  return getStripeSessionRecordFromDB(sessionId);
 }
 
 /**

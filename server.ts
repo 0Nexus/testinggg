@@ -850,18 +850,19 @@ async function startServer() {
       emailVerified: false,
       verificationCode,
       verificationCodeExpiresAt,
-      partnerStackAttribution: partnerAttribution && (partnerAttribution.partnerKey || partnerAttribution.pscd || partnerAttribution.referralCode)
-        ? {
-            partnerKey: String(partnerAttribution.partnerKey || partnerAttribution.pscd || partnerAttribution.referralCode).slice(0, 128),
-            pscd: partnerAttribution.pscd ? String(partnerAttribution.pscd).slice(0, 128) : undefined,
-            referralCode: partnerAttribution.referralCode ? String(partnerAttribution.referralCode).slice(0, 128) : undefined,
-            source: partnerAttribution.source ? String(partnerAttribution.source).slice(0, 64) : 'partnerstack',
-            landingUrl: partnerAttribution.landingUrl ? String(partnerAttribution.landingUrl).slice(0, 256) : undefined,
-            capturedAt: partnerAttribution.capturedAt || new Date().toISOString()
-          }
-        : undefined,
       createdAt: new Date().toISOString()
     };
+
+    if (partnerAttribution && (partnerAttribution.partnerKey || partnerAttribution.pscd || partnerAttribution.referralCode)) {
+      newUser.partnerStackAttribution = {
+        partnerKey: String(partnerAttribution.partnerKey || partnerAttribution.pscd || partnerAttribution.referralCode).slice(0, 128),
+        ...(partnerAttribution.pscd ? { pscd: String(partnerAttribution.pscd).slice(0, 128) } : {}),
+        ...(partnerAttribution.referralCode ? { referralCode: String(partnerAttribution.referralCode).slice(0, 128) } : {}),
+        source: partnerAttribution.source ? String(partnerAttribution.source).slice(0, 64) : 'partnerstack',
+        ...(partnerAttribution.landingUrl ? { landingUrl: String(partnerAttribution.landingUrl).slice(0, 256) } : {}),
+        capturedAt: partnerAttribution.capturedAt || new Date().toISOString()
+      };
+    }
 
     if (userRole === 'contractor' && contractorProfile) {
       newUser.contractorProfile = contractorProfile;
@@ -1058,7 +1059,7 @@ async function startServer() {
 
       const emailConfig = await getResolvedEmailConfig();
       if (!emailConfig.isConfigured) {
-        await updateUserVerification(user.email, true);
+        await updateUserVerification(user.id, true);
         const token = jwt.sign(
           { userId: user.id, email: user.email, role: user.role, name: user.name },
           JWT_SECRET,
@@ -1112,11 +1113,13 @@ async function startServer() {
 
     const storedUser = await getUserByEmail(normalizedEmail);
     if (!storedUser) {
+      console.warn(`[AUTH LOGIN] No account found for email=${normalizedEmail}`);
       return res.status(401).json({ error: 'Invalid email address or password.' });
     }
 
     const passwordVerification = await verifyEncryptedPassword(password, storedUser.passwordHash);
     if (!passwordVerification.valid) {
+      console.warn(`[AUTH LOGIN] Password verification failed for email=${normalizedEmail} (hashFormat=${storedUser.passwordHash?.slice(0, 10)})`);
       return res.status(401).json({ error: 'Invalid email address or password.' });
     }
     if (passwordVerification.needsReencryption) {
@@ -1127,7 +1130,7 @@ async function startServer() {
     if (storedUser.emailVerified === false) {
       const emailConfig = await getResolvedEmailConfig();
       if (!emailConfig.isConfigured) {
-        await updateUserVerification(storedUser.email, true);
+        await updateUserVerification(storedUser.id, true);
         storedUser.emailVerified = true;
       } else {
         const freshVerification = await createEmailVerificationCode(storedUser.email);
