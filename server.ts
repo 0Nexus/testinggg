@@ -14,7 +14,7 @@ import {
 } from './src/lib/authCrypto.js';
 import Stripe from 'stripe';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   seedFirestoreIfEmpty,
   getUserByEmail,
@@ -68,7 +68,9 @@ import {
   getResolvedAirwallexConfig,
   createAirwallexPaymentIntent,
   getAirwallexPaymentIntent,
-  verifyAirwallexWebhookSignature
+  verifyAirwallexWebhookSignature,
+  fetchSecretFromGCP,
+  getGcpProjectId
 } from './src/lib/airwallexServer.js';
 import {
   sendRegistrationVerificationEmail,
@@ -114,20 +116,125 @@ interface JwtPayload {
   name: string;
 }
 
-// Lazy Gemini AI initialization
-let aiClient: GoogleGenAI | null = null;
-function getGenAI(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  if (!aiClient) {
-    aiClient = new GoogleGenAI({
-      apiKey,
+// Lazy Gemini AI initialization (checks process.env + GCP Secret Manager across candidate projects)
+let aiClientCache: { client: GoogleGenAI; key: string; source: 'env' | 'secret_manager'; fetchedAt: number } | null = null;
+const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function getFirebaseConfigProjectId(): string | null {
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (parsed?.projectId && typeof parsed.projectId === 'string') {
+        return parsed.projectId.trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function getResolvedGenAI(): Promise<{
+  client: GoogleGenAI | null;
+  source: 'env' | 'secret_manager' | 'none';
+  diagnosticMessage: string;
+}> {
+  if (aiClientCache && Date.now() - aiClientCache.fetchedAt < GEMINI_CACHE_TTL_MS) {
+    return {
+      client: aiClientCache.client,
+      source: aiClientCache.source,
+      diagnosticMessage: 'Configured'
+    };
+  }
+
+  // 1. Check runtime environment variables injected by AI Studio Secrets or Cloud Run secret env mounts
+  const envKey = (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.API_KEY ||
+    ''
+  ).trim();
+
+  if (envKey) {
+    const client = new GoogleGenAI({
+      apiKey: envKey,
       httpOptions: {
         headers: { 'User-Agent': 'aistudio-build' }
       }
     });
+    aiClientCache = { client, key: envKey, source: 'env', fetchedAt: Date.now() };
+    return { client, source: 'env', diagnosticMessage: 'Resolved from environment variable' };
   }
-  return aiClient;
+
+  // 2. Check Google Secret Manager across runtime GCP project and Firebase/user GCP project
+  const candidateProjects = new Set<string>();
+  const envProj =
+    process.env.GEMINI_SECRET_PROJECT_ID ||
+    process.env.GCP_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GCLOUD_PROJECT;
+  if (envProj?.trim()) candidateProjects.add(envProj.trim());
+
+  const autoProj = await getGcpProjectId();
+  if (autoProj.projectId) candidateProjects.add(autoProj.projectId);
+
+  const firebaseProj = getFirebaseConfigProjectId();
+  if (firebaseProj) candidateProjects.add(firebaseProj);
+
+  const attemptErrors: string[] = [];
+  const results = await Promise.all(
+    Array.from(candidateProjects).map(async projectId => {
+      const secretRes = await fetchSecretFromGCP('GEMINI_API_KEY', {
+        optional: true,
+        projectId
+      });
+      return { projectId, secretRes };
+    })
+  );
+
+  for (const { projectId, secretRes } of results) {
+    if (secretRes.value) {
+      const client = new GoogleGenAI({
+        apiKey: secretRes.value,
+        httpOptions: {
+          headers: { 'User-Agent': 'aistudio-build' }
+        }
+      });
+      aiClientCache = {
+        client,
+        key: secretRes.value,
+        source: 'secret_manager',
+        fetchedAt: Date.now()
+      };
+      return {
+        client,
+        source: 'secret_manager',
+        diagnosticMessage: `Resolved from GCP Secret Manager (${projectId})`
+      };
+    }
+    if (secretRes.diagnostic?.errorMessage) {
+      attemptErrors.push(`${projectId}: ${secretRes.diagnostic.status}`);
+    }
+  }
+
+  return {
+    client: null,
+    source: 'none',
+    diagnosticMessage:
+      attemptErrors.length > 0
+        ? `GEMINI_API_KEY not found in environment variables and Secret Manager lookup returned (${attemptErrors.join('; ')}). Please add GEMINI_API_KEY in AI Studio Settings > Secrets or grant Secret Manager Secret Accessor permission to the runtime service account.`
+        : 'GEMINI_API_KEY is not configured in environment variables or Secret Manager. Please add GEMINI_API_KEY in AI Studio Settings > Secrets.'
+  };
+}
+
+function parseGeminiJsonResponse(rawText?: string | null): any {
+  if (!rawText) return null;
+  let cleaned = rawText.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  }
+  return JSON.parse(cleaned);
 }
 
 // Lazy Stripe Initialization
@@ -555,6 +662,21 @@ async function startServer() {
   // Health check
   app.get('/api/health', (req: Request, res: Response) => {
     res.json({ status: 'ok', time: new Date().toISOString(), database: 'Firestore Connected' });
+  });
+
+  // Gemini AI key configuration status (boolean & source only - never exposes keys)
+  app.get('/api/ai/status', async (_req: Request, res: Response) => {
+    try {
+      const resolved = await getResolvedGenAI();
+      res.json({
+        configured: Boolean(resolved.client),
+        source: resolved.source,
+        model: 'gemini-3.1-flash-lite',
+        diagnosticMessage: resolved.diagnosticMessage
+      });
+    } catch (e: any) {
+      res.status(500).json({ configured: false, error: e?.message || 'Failed to check AI configuration' });
+    }
   });
 
   // Automated Security Test Check
@@ -2030,7 +2152,7 @@ async function startServer() {
       let searchSummary = '';
 
       if (isInsufficient || forceSearch) {
-        const ai = getGenAI();
+        const { client: ai } = await getResolvedGenAI();
         if (ai) {
           try {
             const promptText = `Search Google for real UK trade contracting companies or specialists in "${tradeCategory}" located in "${location}".
@@ -2038,17 +2160,18 @@ Select companies with clear contact email addresses.
 Return JSON array of company objects with keys: companyName, contactName, email, phone, websiteUrl, address, tradeType, certifications, googleRating, reviewCount, estimatedHourlyRateGBP.`;
 
             const response = await ai.models.generateContent({
-              model: 'gemini-3.6-flash',
+              model: 'gemini-3.1-flash-lite',
               contents: promptText,
               config: {
                 tools: [{ googleSearch: {} }],
-                responseMimeType: 'application/json'
+                responseMimeType: 'application/json',
+                abortSignal: AbortSignal.timeout(25000)
               }
             });
 
             if (response.text) {
-              const parsed = JSON.parse(response.text.trim());
-              const list = Array.isArray(parsed) ? parsed : parsed.discoveredContractors || [];
+              const parsed = parseGeminiJsonResponse(response.text);
+              const list = Array.isArray(parsed) ? parsed : parsed?.discoveredContractors || [];
               discoveredContractors = list.filter((c: any) => c.email && c.email.includes('@')).map((c: any, i: number) => ({
                 ...c,
                 id: c.id || `ext-disc-${Date.now()}-${i}`,
@@ -2216,58 +2339,112 @@ Return JSON array of company objects with keys: companyName, contactName, email,
         emergencyPrioritySLA: 'Standard Queue'
       };
 
-      const ai = getGenAI();
+      const { client: ai, diagnosticMessage } = await getResolvedGenAI();
       let aiResultJson: any = null;
 
-      if (ai) {
-        try {
-          const promptText = `You are Tidy Corp's AI Construction & Emergency Repair Estimator in the UK.
-Assess this homeowner's repair request:
+      if (!ai) {
+        return res.status(500).json({ error: diagnosticMessage });
+      }
+
+      try {
+        const promptText = `Assess this UK homeowner repair request:
 - Repair Type: ${repairType || 'Urgent Home Repair'}
 - Urgency Level: ${urgency || 'High'}
 - Damage Description: "${description || 'Damage requires immediate professional repair'}"
 - Care Package Coverage: ${hasActiveCarePackage ? 'HOMEOWNER HAS ACTIVE SAFECOVER CARE PACKAGE (0% CALLOUT EXCESS)' : 'Standard Homeowner'}
 
-Return valid JSON:
-{
-  "repairType": "${repairType || 'Urgent Repair'}",
-  "severityLevel": "${urgency === 'emergency' ? 'Urgent Emergency (24h)' : 'Standard Renovation'}",
-  "estimatedCostMinGBP": number,
-  "estimatedCostMaxGBP": number,
-  "estimatedDurationDays": number,
-  "mcpRecommendedGateway": "stripe" | "airwallex",
-  "gatewayReason": string,
-  "costBreakdown": { "materialsGBP": number, "laborGBP": number, "inspectionEmergencyFeeGBP": number },
-  "explanation": string,
-  "requiredMaterials": string[]
-}`;
+Return realistic UK GBP trade pricing, recommended gateway ("stripe" for urgent/short <=7 day jobs, "airwallex" for multi-week jobs >£2,500), cost breakdown, materials list, and a concise 2-3 sentence technical assessment.`;
 
-          const parts: any[] = [{ text: promptText }];
-          if (Array.isArray(images) && images.length > 0) {
-            images.forEach((img: { mimeType: string, data: string }) => {
-              if (img.data && img.mimeType) {
-                const cleanBase64 = img.data.includes('base64,') ? img.data.split('base64,')[1] : img.data;
-                parts.push({ inlineData: { mimeType: img.mimeType, data: cleanBase64 } });
-              }
-            });
-          }
-
-          const response = await ai.models.generateContent({
-            model: 'gemini-3.6-flash',
-            contents: { parts },
-            config: { responseMimeType: 'application/json' }
+        const parts: any[] = [{ text: promptText }];
+        if (Array.isArray(images) && images.length > 0) {
+          images.forEach((img: { mimeType: string; data: string }) => {
+            if (img.data && img.mimeType) {
+              const cleanBase64 = img.data.includes('base64,') ? img.data.split('base64,')[1] : img.data;
+              parts.push({ inlineData: { mimeType: img.mimeType, data: cleanBase64 } });
+            }
           });
-
-          if (response.text) {
-            aiResultJson = JSON.parse(response.text.trim());
-          }
-        } catch (geminiError: any) {
-          return res.status(500).json({ error: `Gemini API error: ${geminiError?.message || 'Failed to analyze repair'}` });
         }
+
+        const tGenStart = Date.now();
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: { parts },
+          config: {
+            systemInstruction:
+              'You are Tidy Corp UK senior construction estimator. Provide realistic UK GBP trade costs. Keep the explanation strictly to 2-3 concise technical sentences (under 80 words) covering scope, risk, and safety. Never include greetings, sign-offs, marketing fluff, or repeated text. Limit requiredMaterials to 4-7 concise items.',
+            responseMimeType: 'application/json',
+            abortSignal: AbortSignal.timeout(25000),
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                repairType: { type: Type.STRING },
+                severityLevel: {
+                  type: Type.STRING,
+                  enum: ['Urgent Emergency (24h)', 'Priority Repair (3-7 Days)', 'Standard Renovation']
+                },
+                estimatedCostMinGBP: { type: Type.NUMBER },
+                estimatedCostMaxGBP: { type: Type.NUMBER },
+                estimatedDurationDays: { type: Type.NUMBER },
+                mcpRecommendedGateway: {
+                  type: Type.STRING,
+                  enum: ['stripe', 'airwallex']
+                },
+                gatewayReason: {
+                  type: Type.STRING,
+                  description: 'One concise sentence explaining why Stripe or Airwallex was selected.'
+                },
+                costBreakdown: {
+                  type: Type.OBJECT,
+                  properties: {
+                    materialsGBP: { type: Type.NUMBER },
+                    laborGBP: { type: Type.NUMBER },
+                    inspectionEmergencyFeeGBP: { type: Type.NUMBER }
+                  },
+                  required: ['materialsGBP', 'laborGBP', 'inspectionEmergencyFeeGBP']
+                },
+                explanation: {
+                  type: Type.STRING,
+                  description: '2-3 concise technical sentences (max 80 words) explaining scope and safety action. No greetings.'
+                },
+                requiredMaterials: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description: '4 to 7 short material line items.'
+                }
+              },
+              required: [
+                'repairType',
+                'severityLevel',
+                'estimatedCostMinGBP',
+                'estimatedCostMaxGBP',
+                'estimatedDurationDays',
+                'mcpRecommendedGateway',
+                'gatewayReason',
+                'costBreakdown',
+                'explanation',
+                'requiredMaterials'
+              ]
+            }
+          }
+        });
+        console.log(`[AI ESTIMATE] Gemini responded in ${Date.now() - tGenStart}ms`);
+
+        if (response.text) {
+          aiResultJson = parseGeminiJsonResponse(response.text);
+        }
+      } catch (geminiError: any) {
+        console.error('[AI ESTIMATE ERROR]:', geminiError?.message || geminiError);
+        const errMsg = String(geminiError?.message || '');
+        if (errMsg.includes('API_KEY_INVALID') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('403') || errMsg.includes('400')) {
+          return res.status(500).json({
+            error: `Gemini API key error (${errMsg}). Please verify GEMINI_API_KEY in Settings > Secrets or Google Secret Manager.`
+          });
+        }
+        return res.status(500).json({ error: `Gemini API error: ${errMsg || 'Failed to analyze repair'}` });
       }
 
       if (!aiResultJson) {
-        return res.status(500).json({ error: 'Gemini AI API did not return an analysis or is not configured.' });
+        return res.status(500).json({ error: 'Gemini AI API did not return an analysis. Please try again.' });
       }
 
       const contractors = await getVettedContractorsFromDB();
@@ -2313,52 +2490,184 @@ Return valid JSON:
         await saveUser(authenticatedUser);
       }
 
-      const genAI = getGenAI();
-
-      if (genAI) {
-        try {
-          const promptText = `You are Tidy Corp's AI Quoting Agent for UK property renovations.
-Context: Title="${title}", Category="${category}", Region="${ukRegion}", Description="${description || ''}", Urgency="${urgency || 'priority'}", PreferredMerchant="${preferredMerchant || 'Auto-Lowest Price'}".
-User Subscription Tier: "${userSub?.planName || 'Standard'}".
-Return comprehensive JSON for fair-market quote with materialsList, laborList, merchantComparisons (Travis Perkins, Screwfix, Jewson, City Plumbing, Selco), suggestedMilestones, complianceNotes.`;
-
-          const parts: any[] = [{ text: promptText }];
-          if (Array.isArray(images) && images.length > 0) {
-            images.forEach((img: any) => {
-              if (img.data && img.mimeType) {
-                const cleanBase64 = img.data.includes('base64,') ? img.data.split('base64,')[1] : img.data;
-                parts.push({ inlineData: { mimeType: img.mimeType, data: cleanBase64 } });
-              }
-            });
-          }
-
-          const response = await genAI.models.generateContent({
-            model: 'gemini-3.6-flash',
-            contents: { parts },
-            config: { responseMimeType: 'application/json' }
-          });
-
-          if (response.text) {
-            const parsed = JSON.parse(response.text.trim());
-            return res.json({
-              ...parsed,
-              creditsDeducted,
-              remainingCredits: userSub?.remainingCredits,
-              subscriptionPerksActive: Boolean(userSub && userSub.planId !== 'apprentice')
-            });
-          }
-        } catch (e) {
-          console.error('Quoting agent error:', e);
-        }
+      const { client: genAI, diagnosticMessage } = await getResolvedGenAI();
+      if (!genAI) {
+        return res.status(500).json({ error: diagnosticMessage });
       }
 
-      const fallback = generateFallbackQuote(title, category, ukRegion);
-      res.json({
-        ...fallback,
-        creditsDeducted,
-        remainingCredits: userSub?.remainingCredits,
-        subscriptionPerksActive: Boolean(userSub && userSub.planId !== 'apprentice')
-      });
+      try {
+        const promptText = `Generate a UK fair-market trade quote breakdown for:
+Title: "${title}"
+Trade Category: "${category}"
+UK Region: "${ukRegion}"
+Urgency: "${urgency || 'priority'}"
+Preferred Merchant: "${preferredMerchant || 'Auto-Lowest Price'}"
+Subscription Tier: "${userSub?.planName || 'Standard'}"
+Scope Description: "${description || 'Complete trade remediation and installation to UK Building Regulations.'}"
+
+Include 3-5 materialsList items, 2-4 laborList items, all 5 UK merchantComparisons (Travis Perkins, Screwfix, Jewson, City Plumbing, Selco), 2-4 suggestedMilestones, concise complianceNotes, and any contractorWarningFlags.`;
+
+        const parts: any[] = [{ text: promptText }];
+        if (Array.isArray(images) && images.length > 0) {
+          images.forEach((img: any) => {
+            if (img.data && img.mimeType) {
+              const cleanBase64 = img.data.includes('base64,') ? img.data.split('base64,')[1] : img.data;
+              parts.push({ inlineData: { mimeType: img.mimeType, data: cleanBase64 } });
+            }
+          });
+        }
+
+        const tQuoteStart = Date.now();
+        const response = await genAI.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: { parts },
+          config: {
+            systemInstruction:
+              'You are Tidy Corp UK Quantity Surveyor & Quoting Agent. Produce accurate UK GBP construction bills of quantities with realistic merchant SKU pricing, hourly rates, statutory contingency, and concise compliance notes. Keep descriptions concise.',
+            responseMimeType: 'application/json',
+            abortSignal: AbortSignal.timeout(25000),
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                projectTitle: { type: Type.STRING },
+                tradeCategory: { type: Type.STRING },
+                region: { type: Type.STRING },
+                fairMarketStatus: {
+                  type: Type.STRING,
+                  enum: ['fair_market', 'under_scoped_risk', 'predatory_overcharge']
+                },
+                fairMarketRangeMinGBP: { type: Type.NUMBER },
+                fairMarketRangeMaxGBP: { type: Type.NUMBER },
+                recommendedTotalGBP: { type: Type.NUMBER },
+                materialsTotalGBP: { type: Type.NUMBER },
+                laborTotalGBP: { type: Type.NUMBER },
+                statutoryContingencyGBP: { type: Type.NUMBER },
+                platformFeeGBP: { type: Type.NUMBER },
+                estimatedDaysToComplete: { type: Type.NUMBER },
+                materialsList: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      name: { type: Type.STRING },
+                      sku: { type: Type.STRING },
+                      merchant: {
+                        type: Type.STRING,
+                        enum: ['Travis Perkins', 'Screwfix', 'Jewson', 'City Plumbing', 'Selco']
+                      },
+                      category: { type: Type.STRING },
+                      quantity: { type: Type.NUMBER },
+                      unit: { type: Type.STRING },
+                      unitPriceGBP: { type: Type.NUMBER },
+                      totalPriceGBP: { type: Type.NUMBER },
+                      stockStatus: {
+                        type: Type.STRING,
+                        enum: ['In Stock Local Branch', 'Next Day Delivery', 'Special Order']
+                      }
+                    },
+                    required: ['id', 'name', 'sku', 'merchant', 'category', 'quantity', 'unit', 'unitPriceGBP', 'totalPriceGBP', 'stockStatus']
+                  }
+                },
+                laborList: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      tradeRole: { type: Type.STRING },
+                      requiredHours: { type: Type.NUMBER },
+                      hourlyRateGBP: { type: Type.NUMBER },
+                      totalLaborGBP: { type: Type.NUMBER },
+                      qualificationRequired: { type: Type.STRING }
+                    },
+                    required: ['id', 'tradeRole', 'requiredHours', 'hourlyRateGBP', 'totalLaborGBP', 'qualificationRequired']
+                  }
+                },
+                merchantComparisons: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      merchantName: {
+                        type: Type.STRING,
+                        enum: ['Travis Perkins', 'Screwfix', 'Jewson', 'City Plumbing', 'Selco']
+                      },
+                      totalMaterialsGBP: { type: Type.NUMBER },
+                      deliveryTime: { type: Type.STRING },
+                      priceDifferencePct: { type: Type.NUMBER },
+                      recommended: { type: Type.BOOLEAN }
+                    },
+                    required: ['merchantName', 'totalMaterialsGBP', 'deliveryTime', 'priceDifferencePct', 'recommended']
+                  }
+                },
+                suggestedMilestones: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: { type: Type.STRING },
+                      percentage: { type: Type.NUMBER },
+                      amountGBP: { type: Type.NUMBER },
+                      durationDaysFromStart: { type: Type.NUMBER },
+                      recommendedGateway: { type: Type.STRING, enum: ['stripe', 'airwallex'] },
+                      reason: { type: Type.STRING }
+                    },
+                    required: ['title', 'percentage', 'amountGBP', 'durationDaysFromStart', 'recommendedGateway', 'reason']
+                  }
+                },
+                complianceNotes: { type: Type.ARRAY, items: { type: Type.STRING } },
+                contractorWarningFlags: { type: Type.ARRAY, items: { type: Type.STRING } },
+                aiConfidenceScorePct: { type: Type.NUMBER }
+              },
+              required: [
+                'projectTitle',
+                'tradeCategory',
+                'region',
+                'fairMarketStatus',
+                'fairMarketRangeMinGBP',
+                'fairMarketRangeMaxGBP',
+                'recommendedTotalGBP',
+                'materialsTotalGBP',
+                'laborTotalGBP',
+                'statutoryContingencyGBP',
+                'platformFeeGBP',
+                'estimatedDaysToComplete',
+                'materialsList',
+                'laborList',
+                'merchantComparisons',
+                'suggestedMilestones',
+                'complianceNotes',
+                'contractorWarningFlags',
+                'aiConfidenceScorePct'
+              ]
+            }
+          }
+        });
+        console.log(`[AI QUOTING] Gemini responded in ${Date.now() - tQuoteStart}ms`);
+
+        if (response.text) {
+          const parsed = parseGeminiJsonResponse(response.text);
+          return res.json({
+            id: `quote-${Date.now().toString(36)}`,
+            ...parsed,
+            creditsUsed: creditsDeducted,
+            creditsDeducted,
+            remainingCredits: userSub?.remainingCredits,
+            subscriptionPerksActive: Boolean(userSub && userSub.planId !== 'apprentice')
+          });
+        }
+        return res.status(500).json({ error: 'Gemini AI API did not return a trade quote. Please try again.' });
+      } catch (geminiError: any) {
+        console.error('[AI QUOTING ERROR]:', geminiError?.message || geminiError);
+        const errMsg = String(geminiError?.message || '');
+        if (errMsg.includes('API_KEY_INVALID') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('403') || errMsg.includes('400')) {
+          return res.status(500).json({
+            error: `Gemini API key error (${errMsg}). Please verify GEMINI_API_KEY in Settings > Secrets or Google Secret Manager.`
+          });
+        }
+        return res.status(500).json({ error: `Gemini AI API error: ${errMsg || 'Failed to generate AI trade quote.'}` });
+      }
     } catch (err) {
       res.status(500).json({ error: 'Failed to generate AI trade quote.' });
     }

@@ -81,7 +81,9 @@ export async function getGcpProjectId(): Promise<{ projectId: string | null; met
 }
 
 const secretCache: Record<string, { value: string; fetchedAt: number }> = {};
+const negativeSecretCache: Record<string, { diagnostic: SecretDiagnostic; fetchedAt: number }> = {};
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const NEGATIVE_CACHE_TTL_MS = 60 * 1000; // 1 minute
 
 /**
  * Result of fetching a secret from GCP Secret Manager with full diagnostics
@@ -96,23 +98,40 @@ export interface SecretFetchResult {
  */
 export async function fetchSecretFromGCP(
   secretName: string,
-  options?: { optional?: boolean }
+  options?: { optional?: boolean; projectId?: string }
 ): Promise<SecretFetchResult> {
   const isOptional = Boolean(options?.optional);
   const logFn = isOptional ? console.warn : console.error;
-  const cached = secretCache[secretName];
+
+  let projectId: string | null = options?.projectId?.trim() || null;
+  let projectMethod: 'env_var' | 'client_auto_detected' | 'unresolved' = 'env_var';
+
+  if (!projectId) {
+    const resolved = await getGcpProjectId();
+    projectId = resolved.projectId;
+    projectMethod = resolved.method;
+  }
+
+  const cacheKey = `${projectId || 'none'}:${secretName}`;
+  const cached = secretCache[cacheKey];
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     return {
       value: cached.value,
       diagnostic: {
         secretName,
-        projectId: cachedGcpProjectId,
+        projectId,
         status: 'found'
       }
     };
   }
 
-  const { projectId, method: projectMethod } = await getGcpProjectId();
+  const negCached = negativeSecretCache[cacheKey];
+  if (negCached && Date.now() - negCached.fetchedAt < NEGATIVE_CACHE_TTL_MS) {
+    return {
+      value: '',
+      diagnostic: negCached.diagnostic
+    };
+  }
 
   if (!projectId) {
     const diagnostic: SecretDiagnostic = {
@@ -132,11 +151,16 @@ export async function fetchSecretFromGCP(
   const name = `projects/${projectId}/secrets/${secretName}/versions/latest`;
 
   try {
-    const [version] = await client.accessSecretVersion({ name });
+    const accessPromise = client.accessSecretVersion({ name }, { timeout: 3000 });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Secret Manager lookup timed out after 3000ms for ${secretName} in ${projectId}`)), 3000)
+    );
+    const [version] = await Promise.race([accessPromise, timeoutPromise]);
     const payload = version.payload?.data?.toString();
     if (payload) {
       const trimmed = payload.trim();
-      secretCache[secretName] = { value: trimmed, fetchedAt: Date.now() };
+      secretCache[cacheKey] = { value: trimmed, fetchedAt: Date.now() };
+      delete negativeSecretCache[cacheKey];
       return {
         value: trimmed,
         diagnostic: {
@@ -152,6 +176,7 @@ export async function fetchSecretFromGCP(
       status: 'not_found',
       errorMessage: 'Secret payload was empty.'
     };
+    negativeSecretCache[cacheKey] = { diagnostic, fetchedAt: Date.now() };
     return { value: '', diagnostic };
   } catch (err: any) {
     const errCode = err.code || err.status;
@@ -216,6 +241,7 @@ export async function fetchSecretFromGCP(
       errorCode: errCode,
       errorMessage: errMsg
     };
+    negativeSecretCache[cacheKey] = { diagnostic, fetchedAt: Date.now() };
 
     return { value: '', diagnostic };
   }
