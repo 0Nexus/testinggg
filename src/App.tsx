@@ -38,7 +38,39 @@ const PATH_TO_TAB: Record<string, AppTab> = {
   '/checkout': 'checkout'
 };
 
-function parseInitialRoute(): { tab: AppTab; errorStatus: ErrorStatusCode | null; errorPath: string } {
+const TAB_TO_PATH: Record<AppTab, string> = {
+  landing: '/',
+  urgent_ai: '/urgent-repair',
+  quoting_agent: '/quoting',
+  pricing: '/pricing',
+  partners: '/partners',
+  dashboard: '/dashboard',
+  projects: '/projects',
+  contractors: '/contractors',
+  compliance: '/compliance',
+  mcp: '/mcp',
+  checkout: '/checkout'
+};
+
+function getSafeStoredTab(): AppTab | null {
+  try {
+    const saved = localStorage.getItem('tidy_active_tab') as AppTab | null;
+    if (saved && saved in TAB_TO_PATH) return saved;
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function getSafeStoredToken(): string | null {
+  try {
+    return localStorage.getItem('tidy_secure_token');
+  } catch {
+    return null;
+  }
+}
+
+function parseInitialRoute(isInitialMount = false): { tab: AppTab; errorStatus: ErrorStatusCode | null; errorPath: string } {
   if (typeof window === 'undefined') {
     return { tab: 'landing', errorStatus: null, errorPath: '/' };
   }
@@ -62,6 +94,12 @@ function parseInitialRoute(): { tab: AppTab; errorStatus: ErrorStatusCode | null
 
   const matchedTab = PATH_TO_TAB[normalizedPath];
   if (matchedTab) {
+    if (isInitialMount && matchedTab === 'landing' && normalizedPath === '/' && getSafeStoredToken()) {
+      const storedTab = getSafeStoredTab();
+      if (storedTab && storedTab !== 'landing') {
+        return { tab: storedTab, errorStatus: null, errorPath: rawPath };
+      }
+    }
     return { tab: matchedTab, errorStatus: null, errorPath: rawPath };
   }
 
@@ -69,8 +107,8 @@ function parseInitialRoute(): { tab: AppTab; errorStatus: ErrorStatusCode | null
 }
 
 export default function App() {
-  const initialRoute = parseInitialRoute();
-  const [activeTab, setActiveTab] = useState<AppTab>(initialRoute.tab);
+  const initialRoute = parseInitialRoute(true);
+  const [activeTab, setActiveTabState] = useState<AppTab>(initialRoute.tab);
   const [routeError, setRouteError] = useState<{ statusCode: ErrorStatusCode; path: string } | null>(
     initialRoute.errorStatus
       ? { statusCode: initialRoute.errorStatus, path: initialRoute.errorPath }
@@ -81,6 +119,24 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+
+  const setActiveTab = (tab: AppTab) => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem('tidy_active_tab', tab);
+    } catch {
+      // ignore
+    }
+    try {
+      const targetPath = TAB_TO_PATH[tab] || '/';
+      if (typeof window !== 'undefined' && window.location.pathname !== targetPath) {
+        const search = window.location.search || '';
+        window.history.replaceState({}, document.title, `${targetPath}${search}`);
+      }
+    } catch {
+      // ignore history errors
+    }
+  };
 
   const [projects, setProjects] = useState<RenovationProject[]>([]);
   const [mcpRules, setMcpRules] = useState<MCPRule[]>(defaultMCPRules);
@@ -193,36 +249,54 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Protect internal feature tabs if user is not logged in
+  // Protect internal feature tabs ONLY after auth check completes
   useEffect(() => {
-    if (!routeError && !currentUser && activeTab !== 'landing') {
+    if (!isLoadingAuth && !routeError && !currentUser && activeTab !== 'landing') {
       setIsAuthModalOpen(true);
       setActiveTab('landing');
     }
-  }, [currentUser, activeTab, routeError]);
+  }, [isLoadingAuth, currentUser, activeTab, routeError]);
 
-  // Check auth session on mount
+  // Check auth session on mount (supports both Bearer localStorage token & HttpOnly session cookie)
   useEffect(() => {
-    const token = localStorage.getItem('tidy_secure_token');
+    const token = getSafeStoredToken();
+    const headers: Record<string, string> = {};
     if (token) {
-      fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-        .then(res => res.json())
-        .then(data => {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    fetch('/api/auth/me', {
+      credentials: 'include',
+      headers
+    })
+      .then(async res => {
+        if (res.ok) {
+          const data = await res.json();
           if (data.success && data.user) {
             setCurrentUser(data.user);
-          } else {
-            localStorage.removeItem('tidy_secure_token');
+            const storedTab = getSafeStoredTab();
+            if (activeTab === 'landing' && storedTab && storedTab !== 'landing') {
+              setActiveTab(storedTab);
+            }
           }
-        })
-        .catch(() => {
-          console.log('Session check fallback');
-        })
-        .finally(() => setIsLoadingAuth(false));
-    } else {
-      setIsLoadingAuth(false);
-    }
+          return;
+        }
+        if (res.status === 401 || res.status === 404) {
+          try {
+            localStorage.removeItem('tidy_secure_token');
+            localStorage.removeItem('tidy_active_tab');
+          } catch {
+            // ignore
+          }
+          if (typeof window !== 'undefined' && window.location.pathname === '/') {
+            setActiveTabState('landing');
+          }
+        }
+      })
+      .catch(() => {
+        console.log('Session check fallback');
+      })
+      .finally(() => setIsLoadingAuth(false));
   }, []);
 
   // Fetch app data from API whenever currentUser changes & auto-poll every 5s for real-time client-contractor sync
@@ -286,20 +360,25 @@ export default function App() {
 
   // Logout Handler
   const handleLogout = async () => {
-    const token = localStorage.getItem('tidy_secure_token');
-    if (token) {
-      try {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token })
-        });
-      } catch (e) {
-        console.error(e);
-      }
+    const token = getSafeStoredToken();
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(token ? { token } : {})
+      });
+    } catch (e) {
+      console.error(e);
     }
-    localStorage.removeItem('tidy_secure_token');
+    try {
+      localStorage.removeItem('tidy_secure_token');
+      localStorage.removeItem('tidy_active_tab');
+    } catch {
+      // ignore
+    }
     setCurrentUser(null);
+    setActiveTab('landing');
   };
 
   // Handler: Save New Project

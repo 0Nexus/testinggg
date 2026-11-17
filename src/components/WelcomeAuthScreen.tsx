@@ -102,6 +102,7 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -163,6 +164,7 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
     try {
       const res = await fetch('/api/auth/verify-email', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: verificationEmail || email,
@@ -210,6 +212,7 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
     try {
       const res = await fetch('/api/auth/resend-verification', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: targetEmail })
       });

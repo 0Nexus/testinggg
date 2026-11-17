@@ -368,12 +368,57 @@ function calculateFee(amount: number, gateway: PaymentGateway, method: string = 
   return Number((amount * (fees.cardFeePercent / 100) + fees.cardFixedFee).toFixed(2));
 }
 
+function getCookieValue(req: Request, cookieName: string): string | null {
+  const rawCookie = req.headers.cookie;
+  if (!rawCookie) return null;
+  const parts = rawCookie.split(';');
+  for (const part of parts) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = part.slice(0, eqIdx).trim();
+    if (key === cookieName) {
+      try {
+        return decodeURIComponent(part.slice(eqIdx + 1).trim());
+      } catch {
+        return part.slice(eqIdx + 1).trim();
+      }
+    }
+  }
+  return null;
+}
+
+function isSecureRequest(req: Request): boolean {
+  const proto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+  return req.secure || proto === 'https';
+}
+
+function setAuthSessionCookie(req: Request, res: Response, token: string) {
+  const secure = isSecureRequest(req);
+  res.cookie('tidy_secure_token', token, {
+    httpOnly: true,
+    secure,
+    sameSite: secure ? 'none' : 'lax',
+    path: '/',
+    maxAge: 24 * 60 * 60 * 1000
+  });
+}
+
+function clearAuthSessionCookie(req: Request, res: Response) {
+  const secure = isSecureRequest(req);
+  res.clearCookie('tidy_secure_token', {
+    httpOnly: true,
+    secure,
+    sameSite: secure ? 'none' : 'lax',
+    path: '/'
+  });
+}
+
 // Authentication Middlewares
 function authenticateToken(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   const token = (authHeader && authHeader.startsWith('Bearer '))
     ? authHeader.split(' ')[1]
-    : (req.body?.token || req.query?.token as string);
+    : (req.body?.token || (req.query?.token as string) || getCookieValue(req, 'tidy_secure_token'));
 
   if (!token) {
     return res.status(401).json({ error: 'Access denied: Authentication token required' });
@@ -939,6 +984,8 @@ async function startServer() {
 
       console.warn(`[AUTH] Registered and activated ${normalizedEmail} directly (no external email provider configured).`);
 
+      setAuthSessionCookie(req, res, token);
+
       return res.status(201).json({
         success: true,
         requiresVerification: false,
@@ -1028,6 +1075,8 @@ async function startServer() {
 
       console.log(`[AUTH] Email verified successfully for: ${user.email}`);
 
+      setAuthSessionCookie(req, res, token);
+
       res.json({
         success: true,
         message: 'Email confirmed successfully! Welcome to Tidy Corporation.',
@@ -1066,6 +1115,7 @@ async function startServer() {
           { expiresIn: '24h' }
         );
         const { passwordHash: _ph, ...userPublic } = user;
+        setAuthSessionCookie(req, res, token);
         return res.json({
           success: true,
           autoVerified: true,
@@ -1170,7 +1220,9 @@ async function startServer() {
     };
 
     const { passwordHash, ...userPublic } = storedUser;
-    userPublic.subscription = defaultSub;
+    userPublic.subscription = storedUser.subscription || defaultSub;
+
+    setAuthSessionCookie(req, res, token);
 
     res.json({
       success: true,
@@ -1272,7 +1324,14 @@ async function startServer() {
   // Verify Active Session
   app.get('/api/auth/me', authenticateToken, async (req: Request, res: Response) => {
     const jwtUser = (req as any).user as JwtPayload;
-    const user = await getUserById(jwtUser.userId);
+    let user = await getUserById(jwtUser.userId);
+    if (!user && jwtUser.email) {
+      const byEmail = await getUserByEmail(jwtUser.email);
+      if (byEmail) {
+        const { passwordHash: _ph, ...publicByEmail } = byEmail;
+        user = publicByEmail as User;
+      }
+    }
 
     if (!user) {
       return res.status(404).json({ error: 'User profile not found' });
@@ -1302,6 +1361,7 @@ async function startServer() {
 
   // Logout
   app.post('/api/auth/logout', (req: Request, res: Response) => {
+    clearAuthSessionCookie(req, res);
     res.json({ success: true, message: 'Logged out successfully' });
   });
 
