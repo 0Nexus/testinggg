@@ -65,13 +65,13 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
       checkedSecrets.push('RESEND_API_KEY', 'SENDGRID_API_KEY', 'POSTMARK_SERVER_TOKEN', 'MAILGUN_API_KEY', 'EMAIL_API_KEY', 'EMAIL_FROM', 'RESEND_FROM');
       
       const [resendRes, sendgridRes, postmarkRes, mailgunRes, genericRes, fromRes, resendFromRes] = await Promise.all([
-        fetchSecretFromGCP('RESEND_API_KEY'),
-        fetchSecretFromGCP('SENDGRID_API_KEY'),
-        fetchSecretFromGCP('POSTMARK_SERVER_TOKEN'),
-        fetchSecretFromGCP('MAILGUN_API_KEY'),
-        fetchSecretFromGCP('EMAIL_API_KEY'),
-        fetchSecretFromGCP('EMAIL_FROM'),
-        fetchSecretFromGCP('RESEND_FROM')
+        fetchSecretFromGCP('RESEND_API_KEY', { optional: true }),
+        fetchSecretFromGCP('SENDGRID_API_KEY', { optional: true }),
+        fetchSecretFromGCP('POSTMARK_SERVER_TOKEN', { optional: true }),
+        fetchSecretFromGCP('MAILGUN_API_KEY', { optional: true }),
+        fetchSecretFromGCP('EMAIL_API_KEY', { optional: true }),
+        fetchSecretFromGCP('EMAIL_FROM', { optional: true }),
+        fetchSecretFromGCP('RESEND_FROM', { optional: true })
       ]);
 
       if (resendRes.value) resendKey = resendRes.value;
@@ -92,8 +92,8 @@ export async function getResolvedEmailConfig(): Promise<EmailConfig> {
     // If API key was in environment, check Secret Manager specifically for custom sender addresses
     try {
       const [fromRes, resendFromRes] = await Promise.all([
-        fetchSecretFromGCP('EMAIL_FROM'),
-        fetchSecretFromGCP('RESEND_FROM')
+        fetchSecretFromGCP('EMAIL_FROM', { optional: true }),
+        fetchSecretFromGCP('RESEND_FROM', { optional: true })
       ]);
       if (resendFromRes.value) fromEmail = resendFromRes.value;
       else if (fromRes.value) fromEmail = fromRes.value;
@@ -432,10 +432,11 @@ export async function sendEmail(
       `Please add RESEND_API_KEY or SENDGRID_API_KEY to Google Secret Manager in your GCP project or server environment variables. ` +
       `(${config.diagnostics?.statusMessage})`;
 
-    console.error(`[EMAIL CONFIG ERROR] Cannot deliver email to ${to}:`, errorMsg);
+    console.warn(`[EMAIL SERVICE] Skipping external delivery to ${to}: no email API key configured.`);
     return {
       success: false,
       provider: 'none',
+      errorCode: 'EMAIL_NOT_CONFIGURED',
       error: errorMsg
     };
   }

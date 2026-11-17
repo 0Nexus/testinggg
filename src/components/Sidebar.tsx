@@ -19,14 +19,15 @@ import {
   Cookie,
   ChevronLeft,
   ChevronRight,
-  Shield
+  Shield,
+  Handshake
 } from 'lucide-react';
 import { GatewayConfig, User } from '../types';
 import { TidyCorpLogo } from './TidyCorpLogo';
 
 interface SidebarProps {
-  activeTab: 'landing' | 'urgent_ai' | 'quoting_agent' | 'pricing' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout';
-  setActiveTab: (tab: 'landing' | 'urgent_ai' | 'quoting_agent' | 'pricing' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => void;
+  activeTab: 'landing' | 'urgent_ai' | 'quoting_agent' | 'pricing' | 'partners' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout';
+  setActiveTab: (tab: 'landing' | 'urgent_ai' | 'quoting_agent' | 'pricing' | 'partners' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => void;
   gatewayConfig: GatewayConfig;
   currentUser?: User | null;
   onLogout?: () => void;
@@ -76,6 +77,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'nav-tab-contractors', tab: 'contractors', label: 'Vetted Contractors', icon: UserCheck, iconColor: 'text-cyan-300' },
     { id: 'nav-tab-compliance', tab: 'compliance', label: "Awaab's Law", icon: AlertTriangle, iconColor: 'text-amber-400' },
     { id: 'nav-tab-pricing', tab: 'pricing', label: 'Pricing & Plans', icon: Crown, iconColor: 'text-amber-300' },
+    { id: 'nav-tab-partners', tab: 'partners', label: 'PartnerStack', icon: Handshake, iconColor: 'text-cyan-300', badge: '20% Rev', badgeColor: 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' },
     { id: 'nav-tab-checkout', tab: 'checkout', label: 'Escrow Portal', icon: ShieldCheck, iconColor: 'text-emerald-400' },
     { id: 'nav-tab-mcp', tab: 'mcp', label: 'Settings', icon: Settings2, iconColor: 'text-cyan-400' },
   ];

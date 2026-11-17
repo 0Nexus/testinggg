@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { User } from '../types';
 import { TidyCorpLogo } from './TidyCorpLogo';
+import { getStoredPartnerStackAttribution, notifyPartnerStackClientSignup } from '../lib/partnerStackClient';
 
 interface WelcomeAuthScreenProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -92,8 +93,10 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
       availability: 'Immediate (Within 2 hrs)'
     } : undefined;
 
+    const partnerAttribution = getStoredPartnerStackAttribution();
+
     const payload = authMode === 'register'
-      ? { email, password, name, companyName, role, phone, contractorProfile }
+      ? { email, password, name, companyName, role, phone, contractorProfile, partnerAttribution }
       : { email, password };
 
     try {
@@ -126,8 +129,15 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
         return;
       }
 
-      // Handle Successful Login
+      // Handle Successful Login or direct registration activation
       if (data.token && data.user) {
+        if (authMode === 'register') {
+          notifyPartnerStackClientSignup({
+            email: data.user.email,
+            name: data.user.name,
+            customerKey: data.user.id
+          });
+        }
         localStorage.setItem('tidy_secure_token', data.token);
         onLoginSuccess(data.user, data.token);
       }
@@ -167,6 +177,11 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
       }
 
       if (data.token && data.user) {
+        notifyPartnerStackClientSignup({
+          email: data.user.email,
+          name: data.user.name,
+          customerKey: data.user.id
+        });
         setSuccessMessage('Email verified successfully! Entering your escrow portal...');
         localStorage.setItem('tidy_secure_token', data.token);
         setTimeout(() => {
@@ -203,6 +218,15 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
 
       if (!res.ok) {
         throw new Error(data.error || 'Failed to resend confirmation code.');
+      }
+
+      if (data.token && data.user) {
+        localStorage.setItem('tidy_secure_token', data.token);
+        setSuccessMessage(data.message || 'Account verified! Entering portal...');
+        setTimeout(() => {
+          onLoginSuccess(data.user, data.token);
+        }, 800);
+        return;
       }
 
       setVerificationCode('');
@@ -477,6 +501,19 @@ export const WelcomeAuthScreen: React.FC<WelcomeAuthScreenProps> = ({ onLoginSuc
                   </button>
                   <span className="text-xs font-mono font-bold uppercase text-cyan-400">
                     {authMode === 'verify_email' ? 'Email Confirmation' : 'Password Recovery'}
+                  </span>
+                </div>
+              )}
+
+              {/* PartnerStack Referral Attribution Indicator */}
+              {authMode === 'register' && getStoredPartnerStackAttribution() && (
+                <div className="mb-4 p-3 bg-cyan-950/70 border border-cyan-800/80 rounded-xl text-cyan-200 text-xs flex items-center justify-between">
+                  <span className="flex items-center space-x-2">
+                    <Sparkles className="h-4 w-4 text-cyan-400 shrink-0" />
+                    <span>Partner referral applied via PartnerStack</span>
+                  </span>
+                  <span className="font-mono font-bold text-cyan-300">
+                    {getStoredPartnerStackAttribution()?.referralCode || getStoredPartnerStackAttribution()?.partnerKey}
                   </span>
                 </div>
               )}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { TidyCorpLogo } from './TidyCorpLogo';
+import { PartnerProgramPortal } from './PartnerProgramPortal';
 
 // Photorealistic Human Realism Generated Assets
 import ukRenovationHeroImg from '../assets/images/uk_renovation_hero_1786446306023.jpg';
@@ -57,12 +58,13 @@ import {
   Sun,
   Moon,
   Home,
-  Briefcase
+  Briefcase,
+  Handshake
 } from 'lucide-react';
 
 interface LandingPageProps {
   currentUser: User | null;
-  onNavigateTab: (tab: 'urgent_ai' | 'quoting_agent' | 'pricing' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => void;
+  onNavigateTab: (tab: 'urgent_ai' | 'quoting_agent' | 'pricing' | 'partners' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => void;
   onOpenAuthModal?: () => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
@@ -130,13 +132,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     setTimeout(() => setSdkCopied(false), 2500);
   };
 
-  const handleFeatureAccess = (targetTab: 'urgent_ai' | 'quoting_agent' | 'pricing' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => {
+  const handleFeatureAccess = (targetTab: 'urgent_ai' | 'quoting_agent' | 'pricing' | 'partners' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout') => {
     if (!currentUser) {
       if (onOpenAuthModal) {
         onOpenAuthModal();
       }
     } else {
       onNavigateTab(targetTab);
+    }
+  };
+
+  const scrollToPartnerSection = () => {
+    const el = document.getElementById('partnerstack-landing-section');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
@@ -169,6 +178,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <button onClick={() => handleFeatureAccess('pricing')} className="hover:text-cyan-400 transition-colors flex items-center space-x-1">
                 <Coins className="h-3.5 w-3.5 text-emerald-400" />
                 <span>SaaS Tiers &amp; Pricing</span>
+              </button>
+              <button onClick={scrollToPartnerSection} className="hover:text-cyan-400 transition-colors flex items-center space-x-1">
+                <Handshake className="h-3.5 w-3.5 text-cyan-400" />
+                <span>PartnerStack Program</span>
               </button>
             </nav>
 
@@ -1263,6 +1276,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
         </section>
 
+        {/* 8.5 PARTNERSTACK AFFILIATE & B2B PARTNER ECOSYSTEM */}
+        <section id="partnerstack-landing-section" className="scroll-mt-24">
+          <PartnerProgramPortal
+            currentUser={currentUser}
+            onOpenAuthModal={onOpenAuthModal}
+            embeddedInLanding={true}
+          />
+        </section>
+
         {/* 9. BOTTOM CTA BANNER (PDF Pages 32 & 35) */}
         <section className="bg-gradient-to-r from-[#0057B8] via-[#0088FF] to-[#FF7F00] rounded-3xl p-8 sm:p-12 text-slate-950 flex flex-col lg:flex-row items-center justify-between gap-8 shadow-2xl">
           <div className="space-y-2">
@@ -1302,6 +1324,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <footer className="border-t border-slate-800/80 pt-8 pb-12 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 font-mono gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <span>© 2026 Tidy Corporation Ltd • Company Registration: 16530001</span>
+            <button
+              onClick={currentUser ? () => onNavigateTab('partners') : scrollToPartnerSection}
+              className="text-amber-400 hover:text-amber-300 underline underline-offset-4 transition-colors"
+            >
+              PartnerStack Program
+            </button>
             {onOpenCookieSettings && (
               <button
                 onClick={onOpenCookieSettings}

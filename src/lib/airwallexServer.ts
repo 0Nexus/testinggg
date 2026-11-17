@@ -94,7 +94,12 @@ export interface SecretFetchResult {
 /**
  * Attempt to read a secret from Google Secret Manager with robust error classification and logging.
  */
-export async function fetchSecretFromGCP(secretName: string): Promise<SecretFetchResult> {
+export async function fetchSecretFromGCP(
+  secretName: string,
+  options?: { optional?: boolean }
+): Promise<SecretFetchResult> {
+  const isOptional = Boolean(options?.optional);
+  const logFn = isOptional ? console.warn : console.error;
   const cached = secretCache[secretName];
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     return {
@@ -116,8 +121,8 @@ export async function fetchSecretFromGCP(secretName: string): Promise<SecretFetc
       status: 'project_unresolved',
       errorMessage: 'GCP project ID could not be resolved (no env var and client auto-detection failed).'
     };
-    console.error(
-      `[SECRET MANAGER RESOLUTION ERROR] Cannot fetch secret '${secretName}': No GCP project ID available. ` +
+    logFn(
+      `[SECRET MANAGER RESOLUTION ${isOptional ? 'NOTICE' : 'ERROR'}] Cannot fetch secret '${secretName}': No GCP project ID available. ` +
       `Environment variables (GCP_PROJECT, GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT) are not set and Google Cloud client library could not auto-resolve project ID.`
     );
     return { value: '', diagnostic };
@@ -158,10 +163,12 @@ export async function fetchSecretFromGCP(secretName: string): Promise<SecretFetc
 
     if (errCode === 5 || errCode === 404 || errMsg.includes('NOT_FOUND') || errMsg.includes('not found')) {
       statusCategory = 'not_found';
-      console.error(
-        `[SECRET MANAGER NOT FOUND] Secret '${secretName}' does not exist or has no latest version in GCP project '${projectId}'. ` +
-        `[Code: ${errCode || 404}] Details: ${errMsg}`
-      );
+      if (!isOptional) {
+        console.error(
+          `[SECRET MANAGER NOT FOUND] Secret '${secretName}' does not exist or has no latest version in GCP project '${projectId}'. ` +
+          `[Code: ${errCode || 404}] Details: ${errMsg}`
+        );
+      }
     } else if (
       errCode === 7 ||
       errCode === 403 ||
@@ -170,7 +177,7 @@ export async function fetchSecretFromGCP(secretName: string): Promise<SecretFetc
       errMsg.includes('does not have secretmanager.secrets.get')
     ) {
       statusCategory = 'permission_denied';
-      console.error(
+      logFn(
         `[SECRET MANAGER PERMISSION DENIED] Access denied fetching secret '${secretName}' from GCP project '${projectId}'. ` +
         `The Cloud Run runtime service account requires the 'roles/secretmanager.secretAccessor' IAM role. ` +
         `[Code: ${errCode || 403}] Details: ${errMsg}`
@@ -183,20 +190,20 @@ export async function fetchSecretFromGCP(secretName: string): Promise<SecretFetc
       errMsg.includes('SERVICE_DISABLED')
     ) {
       statusCategory = 'api_disabled';
-      console.error(
+      logFn(
         `[SECRET MANAGER API DISABLED] Secret Manager API is not enabled for GCP project '${projectId}'. ` +
         `Enable 'secretmanager.googleapis.com' in the Google Cloud Console. ` +
         `[Code: ${errCode || 9}] Details: ${errMsg}`
       );
     } else if (errCode === 16 || errCode === 401 || errMsg.includes('UNAUTHENTICATED')) {
       statusCategory = 'unauthenticated';
-      console.error(
+      logFn(
         `[SECRET MANAGER AUTH ERROR] Unauthenticated request while fetching secret '${secretName}' from GCP project '${projectId}'. ` +
         `[Code: ${errCode || 401}] Details: ${errMsg}`
       );
     } else {
       statusCategory = 'error';
-      console.error(
+      logFn(
         `[SECRET MANAGER UNEXPECTED ERROR] Failed to fetch secret '${secretName}' from GCP project '${projectId}' (Resolution: ${projectMethod}): ` +
         `[Code: ${errCode || 'UNKNOWN'}] Details: ${errMsg} ${errDetails ? `| Details: ${errDetails}` : ''}`
       );

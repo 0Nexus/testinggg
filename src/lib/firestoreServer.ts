@@ -23,15 +23,17 @@ import { getAuth, signInAnonymously } from 'firebase/auth';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
+import { encryptAndHashPassword } from './authCrypto.js';
 import { initialProjects, defaultMCPRules, defaultGatewayConfig, initialTransactions, initialVettedContractors } from '../data/mockData.js';
-import { User, RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, VettedContractor, ContractorInvitationLog, AirwallexCheckoutSession } from '../types.js';
+import { User, RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, VettedContractor, ContractorInvitationLog, AirwallexCheckoutSession, PartnerStackConfig, PartnerStackPartner, PartnerStackEvent, PartnerStackAttribution } from '../types.js';
 
 export interface StoredUser extends User {
   passwordHash: string;
   emailVerified?: boolean;
   verificationCode?: string;
   verificationCodeExpiresAt?: string;
+  partnerStackAttribution?: PartnerStackAttribution;
+  partnerStackPartnerId?: string;
 }
 
 export interface PasswordResetRecord {
@@ -73,13 +75,13 @@ async function getPasswordHash(passType: 'admin' | 'user'): Promise<string> {
   if (passType === 'admin') {
     if (!adminPasswordHashCache) {
       const adminPass = process.env.ADMIN_INITIAL_PASSWORD || (process.env.NODE_ENV === 'production' ? crypto.randomBytes(16).toString('hex') : 'password123');
-      adminPasswordHashCache = await bcrypt.hash(adminPass, 10);
+      adminPasswordHashCache = await encryptAndHashPassword(adminPass);
     }
     return adminPasswordHashCache;
   } else {
     if (!defaultUserPasswordHashCache) {
       const userPass = process.env.DEMO_INITIAL_PASSWORD || 'password123';
-      defaultUserPasswordHashCache = await bcrypt.hash(userPass, 10);
+      defaultUserPasswordHashCache = await encryptAndHashPassword(userPass);
     }
     return defaultUserPasswordHashCache;
   }
@@ -353,7 +355,7 @@ export async function verifyUserEmailCode(email: string, code: string): Promise<
 }
 
 export async function updateUserPassword(userId: string, newPasswordPlain: string): Promise<boolean> {
-  const passwordHash = await bcrypt.hash(newPasswordPlain, 10);
+  const passwordHash = await encryptAndHashPassword(newPasswordPlain);
   try {
     const firestore = await initFirestoreDB();
     if (firestore) {
@@ -842,3 +844,143 @@ export async function updateAirwallexSessionInDB(
 
   return await saveAirwallexSessionToDB(merged);
 }
+
+// --- PARTNERSTACK AFFILIATE & CHANNEL CRUD ---
+let memoryPartnerStackConfig: PartnerStackConfig = {
+  enabled: true,
+  publicKey: process.env.PARTNERSTACK_PUBLIC_KEY || '',
+  companyKey: process.env.PARTNERSTACK_COMPANY_KEY || '',
+  partnerPortalUrl: process.env.PARTNERSTACK_PORTAL_URL || 'https://dash.partnerstack.com',
+  defaultCommissionPercent: 20,
+  contractorBountyGBP: 75,
+  trackEscrowFees: true,
+  autoApprovePartners: false,
+  updatedAt: new Date().toISOString()
+};
+
+let memoryPartnerStackPartners: PartnerStackPartner[] = [];
+let memoryPartnerStackEvents: PartnerStackEvent[] = [];
+
+export async function getPartnerStackConfigFromDB(): Promise<PartnerStackConfig> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      const snap = await getDoc(doc(firestore, 'partnerStackConfig', 'default'));
+      if (snap.exists()) {
+        const cfg = snap.data() as PartnerStackConfig;
+        memoryPartnerStackConfig = cfg;
+        return cfg;
+      }
+    }
+  } catch (e) {
+    console.log('getPartnerStackConfigFromDB Firestore fallback to memory');
+  }
+  return memoryPartnerStackConfig;
+}
+
+export async function savePartnerStackConfigToDB(config: PartnerStackConfig): Promise<PartnerStackConfig> {
+  const updated: PartnerStackConfig = {
+    ...config,
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await setDoc(doc(firestore, 'partnerStackConfig', 'default'), updated);
+    }
+  } catch (e) {
+    console.log('savePartnerStackConfigToDB Firestore fallback to memory');
+  }
+  memoryPartnerStackConfig = updated;
+  return updated;
+}
+
+export async function getPartnerStackPartnersFromDB(): Promise<PartnerStackPartner[]> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      const snap = await getDocs(collection(firestore, 'partnerStackPartners'));
+      if (!snap.empty) {
+        const list = snap.docs.map(d => d.data() as PartnerStackPartner);
+        memoryPartnerStackPartners = list;
+        return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      }
+    }
+  } catch (e) {
+    console.log('getPartnerStackPartnersFromDB Firestore fallback to memory');
+  }
+  return [...memoryPartnerStackPartners].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getPartnerByKeyOrCodeFromDB(keyOrCode: string): Promise<PartnerStackPartner | null> {
+  if (!keyOrCode) return null;
+  const normalized = keyOrCode.trim().toLowerCase();
+  const partners = await getPartnerStackPartnersFromDB();
+  return (
+    partners.find(
+      p =>
+        p.partnerKey.toLowerCase() === normalized ||
+        p.referralCode.toLowerCase() === normalized ||
+        p.id.toLowerCase() === normalized
+    ) || null
+  );
+}
+
+export async function getPartnerByEmailFromDB(email: string): Promise<PartnerStackPartner | null> {
+  if (!email) return null;
+  const normalized = email.trim().toLowerCase();
+  const partners = await getPartnerStackPartnersFromDB();
+  return partners.find(p => p.email.toLowerCase() === normalized) || null;
+}
+
+export async function savePartnerStackPartnerToDB(partner: PartnerStackPartner): Promise<PartnerStackPartner> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await setDoc(doc(firestore, 'partnerStackPartners', partner.id), partner);
+    }
+  } catch (e) {
+    console.log('savePartnerStackPartnerToDB Firestore fallback to memory');
+  }
+
+  const idx = memoryPartnerStackPartners.findIndex(p => p.id === partner.id);
+  if (idx >= 0) memoryPartnerStackPartners[idx] = partner;
+  else memoryPartnerStackPartners.unshift(partner);
+
+  return partner;
+}
+
+export async function getPartnerStackEventsFromDB(): Promise<PartnerStackEvent[]> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      const snap = await getDocs(collection(firestore, 'partnerStackEvents'));
+      if (!snap.empty) {
+        const list = snap.docs.map(d => d.data() as PartnerStackEvent);
+        memoryPartnerStackEvents = list;
+        return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      }
+    }
+  } catch (e) {
+    console.log('getPartnerStackEventsFromDB Firestore fallback to memory');
+  }
+  return [...memoryPartnerStackEvents].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function savePartnerStackEventToDB(event: PartnerStackEvent): Promise<PartnerStackEvent> {
+  try {
+    const firestore = await initFirestoreDB();
+    if (firestore) {
+      await setDoc(doc(firestore, 'partnerStackEvents', event.id), event);
+    }
+  } catch (e) {
+    console.log('savePartnerStackEventToDB Firestore fallback to memory');
+  }
+
+  const idx = memoryPartnerStackEvents.findIndex(ev => ev.id === event.id);
+  if (idx >= 0) memoryPartnerStackEvents[idx] = event;
+  else memoryPartnerStackEvents.unshift(event);
+
+  return event;
+}
+

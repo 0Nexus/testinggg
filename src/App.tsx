@@ -13,13 +13,69 @@ import { UrgentRepairAIForm } from './components/UrgentRepairAIForm';
 import { QuotingAgent } from './components/QuotingAgent';
 import { AdminContractorManager } from './components/AdminContractorManager';
 import { PricingSubscriptionPortal } from './components/PricingSubscriptionPortal';
+import { PartnerProgramPortal } from './components/PartnerProgramPortal';
 import { CookieConsentBanner } from './components/CookieConsentBanner';
+import { ErrorPage, ErrorStatusCode } from './components/ErrorPage';
+import { capturePartnerStackReferralFromUrl, initPartnerStackJS } from './lib/partnerStackClient';
 import { RenovationProject, MCPRule, GatewayConfig, PaymentTransaction, User } from './types';
 import { initialProjects, defaultMCPRules, defaultGatewayConfig, initialTransactions } from './data/mockData';
 import { Shield, X, LogIn } from 'lucide-react';
 
+type AppTab = 'landing' | 'urgent_ai' | 'quoting_agent' | 'pricing' | 'partners' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout';
+
+const PATH_TO_TAB: Record<string, AppTab> = {
+  '/': 'landing',
+  '/home': 'landing',
+  '/urgent-repair': 'urgent_ai',
+  '/quoting': 'quoting_agent',
+  '/pricing': 'pricing',
+  '/partners': 'partners',
+  '/dashboard': 'dashboard',
+  '/projects': 'projects',
+  '/contractors': 'contractors',
+  '/compliance': 'compliance',
+  '/mcp': 'mcp',
+  '/checkout': 'checkout'
+};
+
+function parseInitialRoute(): { tab: AppTab; errorStatus: ErrorStatusCode | null; errorPath: string } {
+  if (typeof window === 'undefined') {
+    return { tab: 'landing', errorStatus: null, errorPath: '/' };
+  }
+  const rawPath = window.location.pathname || '/';
+  const normalizedPath = rawPath.length > 1 ? rawPath.replace(/\/+$/, '').toLowerCase() : '/';
+  const params = new URLSearchParams(window.location.search);
+  const errorParam = params.get('error');
+
+  if (normalizedPath === '/403' || errorParam === '403') {
+    return { tab: 'landing', errorStatus: 403, errorPath: rawPath };
+  }
+  if (normalizedPath === '/404' || errorParam === '404') {
+    return { tab: 'landing', errorStatus: 404, errorPath: rawPath };
+  }
+  if (normalizedPath === '/500' || normalizedPath === '/error' || errorParam === '500') {
+    return { tab: 'landing', errorStatus: 500, errorPath: rawPath };
+  }
+  if (normalizedPath === '/503' || errorParam === '503') {
+    return { tab: 'landing', errorStatus: 503, errorPath: rawPath };
+  }
+
+  const matchedTab = PATH_TO_TAB[normalizedPath];
+  if (matchedTab) {
+    return { tab: matchedTab, errorStatus: null, errorPath: rawPath };
+  }
+
+  return { tab: 'landing', errorStatus: 404, errorPath: rawPath };
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'landing' | 'urgent_ai' | 'quoting_agent' | 'pricing' | 'dashboard' | 'projects' | 'contractors' | 'compliance' | 'mcp' | 'checkout'>('landing');
+  const initialRoute = parseInitialRoute();
+  const [activeTab, setActiveTab] = useState<AppTab>(initialRoute.tab);
+  const [routeError, setRouteError] = useState<{ statusCode: ErrorStatusCode; path: string } | null>(
+    initialRoute.errorStatus
+      ? { statusCode: initialRoute.errorStatus, path: initialRoute.errorPath }
+      : null
+  );
 
   // User Auth State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -56,6 +112,24 @@ export default function App() {
   };
 
   const [paymentBanner, setPaymentBanner] = useState<{ type: 'success' | 'cancelled'; message: string } | null>(null);
+  const [partnerStackPublicKey, setPartnerStackPublicKey] = useState<string>('');
+
+  // Initialize PartnerStack URL referral capture & PartnerStackJS loader (respecting UK GDPR consent)
+  useEffect(() => {
+    capturePartnerStackReferralFromUrl();
+    fetch('/api/partnerstack/config')
+      .then(res => res.json())
+      .then(data => {
+        const pubKey = data?.config?.publicKey;
+        if (data?.config?.enabled && pubKey) {
+          setPartnerStackPublicKey(pubKey);
+          initPartnerStackJS(pubKey, true);
+        }
+      })
+      .catch(() => {
+        // Non-blocking PartnerStack bootstrap
+      });
+  }, []);
 
   // Check for Stripe Checkout redirect returns (?payment_status=success&session_id=...)
   useEffect(() => {
@@ -104,13 +178,28 @@ export default function App() {
     }
   }, []);
 
+  // Keep browser history navigation synced with active route & custom error page
+  useEffect(() => {
+    const handlePopState = () => {
+      const next = parseInitialRoute();
+      if (next.errorStatus) {
+        setRouteError({ statusCode: next.errorStatus, path: next.errorPath });
+      } else {
+        setRouteError(null);
+        setActiveTab(next.tab);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   // Protect internal feature tabs if user is not logged in
   useEffect(() => {
-    if (!currentUser && activeTab !== 'landing') {
+    if (!routeError && !currentUser && activeTab !== 'landing') {
       setIsAuthModalOpen(true);
       setActiveTab('landing');
     }
-  }, [currentUser, activeTab]);
+  }, [currentUser, activeTab, routeError]);
 
   // Check auth session on mount
   useEffect(() => {
@@ -354,6 +443,23 @@ export default function App() {
     setActiveTab('checkout');
   };
 
+  const handleReturnFromErrorPage = (targetTab: AppTab = 'landing', openAuthIfLoggedOut = false) => {
+    setRouteError(null);
+    try {
+      window.history.pushState({}, document.title, '/');
+    } catch {
+      // ignore history errors
+    }
+    if (targetTab !== 'landing' && !currentUser) {
+      setActiveTab('landing');
+      if (openAuthIfLoggedOut) {
+        setIsAuthModalOpen(true);
+      }
+      return;
+    }
+    setActiveTab(targetTab);
+  };
+
   // Loading screen during auth check
   if (isLoadingAuth) {
     return (
@@ -364,6 +470,27 @@ export default function App() {
         <h2 className="text-xl font-black tracking-tight">tidy corporation LTD</h2>
         <p className="text-slate-400 text-xs mt-1">Verifying Escrow Portal Authentication...</p>
       </div>
+    );
+  }
+
+  if (routeError) {
+    return (
+      <ErrorPage
+        statusCode={routeError.statusCode}
+        path={routeError.path}
+        theme={theme}
+        onReturnHome={() => handleReturnFromErrorPage('landing')}
+        onOpenPricing={() => handleReturnFromErrorPage('pricing', true)}
+        onOpenPartners={() => {
+          handleReturnFromErrorPage('partners', false);
+          if (!currentUser) {
+            setTimeout(() => {
+              const el = document.getElementById('partnerstack-landing-section');
+              if (el) el.scrollIntoView({ behavior: 'smooth' });
+            }, 100);
+          }
+        }}
+      />
     );
   }
 
@@ -457,6 +584,13 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'partners' && (
+          <PartnerProgramPortal
+            currentUser={currentUser}
+            onOpenAuthModal={() => setIsAuthModalOpen(true)}
+          />
+        )}
+
         {activeTab === 'dashboard' && (
           <DashboardOverview
             projects={projects}
@@ -543,6 +677,11 @@ export default function App() {
       <CookieConsentBanner
         forceOpenModal={isCookieModalOpen}
         onCloseModal={() => setIsCookieModalOpen(false)}
+        onConsentUpdated={prefs => {
+          if (prefs.marketing && partnerStackPublicKey) {
+            initPartnerStackJS(partnerStackPublicKey, false);
+          }
+        }}
       />
     </div>
   );

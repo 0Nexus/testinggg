@@ -316,10 +316,10 @@ export const CookieConsentBanner: React.FC<CookieConsentBannerProps> = ({
                   </label>
                 </div>
                 <p className="text-slate-400">
-                  Tracks contractor invite campaigns, trade guild membership verification, and statutory Awaab's law certificate delivery.
+                  Tracks contractor invite campaigns, PartnerStack affiliate &amp; trade guild referral attribution, and statutory Awaab's law certificate delivery.
                 </p>
                 <div className="text-[11px] font-mono text-slate-500 pt-1">
-                  Retention: 180 Days • Providers: Tidy Corp Dispatch Engine
+                  Retention: 90-180 Days • Providers: Tidy Corp Dispatch Engine, PartnerStack
                 </div>
               </div>
             </div>

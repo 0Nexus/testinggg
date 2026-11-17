@@ -83,6 +83,8 @@ export interface User {
   phone?: string;
   emailVerified?: boolean;
   subscription?: UserSubscription;
+  partnerStackAttribution?: PartnerStackAttribution;
+  partnerStackPartnerId?: string;
   contractorProfile?: {
     companyName: string;
     tradeType: string;
@@ -529,4 +531,78 @@ export interface StripeCheckoutSession {
   gatewayRef?: string;
   paymentMethodUsed?: string;
   webhookDelivered?: boolean;
+}
+
+// PartnerStack Affiliate & Channel Ecosystem Types
+export interface PartnerStackAttribution {
+  partnerKey?: string;
+  pscd?: string;
+  referralCode?: string;
+  source?: string;
+  landingUrl?: string;
+  capturedAt: string;
+}
+
+export interface PartnerStackConfig {
+  enabled: boolean;
+  publicKey: string;
+  companyKey: string;
+  partnerPortalUrl: string;
+  defaultCommissionPercent: number;
+  contractorBountyGBP: number;
+  trackEscrowFees: boolean;
+  autoApprovePartners: boolean;
+  isLiveConfigured?: boolean;
+  hasSecretKey?: boolean;
+  hasWebhookSecret?: boolean;
+  source?: 'env' | 'secret_manager' | 'firestore' | 'default';
+  updatedAt?: string;
+}
+
+export type PartnerStackEventType =
+  | 'customer.signup'
+  | 'transaction.subscription'
+  | 'transaction.escrow_milestone'
+  | 'partner.application'
+  | 'webhook.inbound'
+  | 'referral.click';
+
+export interface PartnerStackEvent {
+  id: string;
+  eventType: PartnerStackEventType;
+  customerEmail?: string;
+  customerName?: string;
+  partnerKey?: string;
+  referralCode?: string;
+  amountGBP?: number;
+  commissionGBP?: number;
+  currency: string;
+  transactionKey?: string;
+  productKey?: string;
+  syncStatus: 'live_synced' | 'queued_sandbox' | 'failed';
+  partnerStackResponseId?: string;
+  errorMessage?: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+}
+
+export interface PartnerStackPartner {
+  id: string;
+  userId?: string;
+  name: string;
+  email: string;
+  companyName: string;
+  partnerType: 'trade_guild' | 'property_agency' | 'mortgage_broker' | 'affiliate_creator';
+  website?: string;
+  referralCode: string;
+  referralLink: string;
+  partnerKey: string;
+  status: 'pending' | 'approved' | 'active';
+  clicksCount: number;
+  signupsCount: number;
+  paidConversionsCount: number;
+  totalRevenueReferredGBP: number;
+  totalCommissionsEarnedGBP: number;
+  partnerStackPartnershipId?: string;
+  createdAt: string;
 }

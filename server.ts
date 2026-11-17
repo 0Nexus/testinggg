@@ -5,8 +5,13 @@ import crypto from 'crypto';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import {
+  resolveJwtSecretAsync,
+  getJwtSecretSync,
+  encryptAndHashPassword,
+  verifyEncryptedPassword
+} from './src/lib/authCrypto.js';
 import Stripe from 'stripe';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -42,8 +47,22 @@ import {
   createPasswordResetToken,
   getPasswordResetRecord,
   markPasswordResetUsed,
+  getPartnerStackPartnersFromDB,
+  savePartnerStackPartnerToDB,
+  getPartnerStackEventsFromDB,
+  savePartnerStackEventToDB,
+  getPartnerByEmailFromDB,
   StoredUser
 } from './src/lib/firestoreServer.js';
+import {
+  getPublicPartnerStackConfig,
+  updatePartnerStackConfig,
+  recordPartnerStackClick,
+  syncPartnerStackCustomerSignup,
+  syncPartnerStackTransaction,
+  applyAsPartnerStackPartner,
+  verifyPartnerStackWebhookSignature
+} from './src/lib/partnerStackServer.js';
 import {
   getAirwallexConfig,
   getResolvedAirwallexConfig,
@@ -87,19 +106,6 @@ import {
 } from './src/types.js';
 
 const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
-
-function resolveJwtSecret(): string {
-  if (process.env.JWT_SECRET) {
-    return process.env.JWT_SECRET;
-  }
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('FATAL SECURITY ERROR: JWT_SECRET environment variable must be set in production to prevent token forgery.');
-  }
-  console.warn('[SECURITY WARNING] JWT_SECRET environment variable not provided. Ephemeral 256-bit secret generated for session safety.');
-  return crypto.randomBytes(32).toString('hex');
-}
-
-const JWT_SECRET = resolveJwtSecret();
 
 interface JwtPayload {
   userId: string;
@@ -267,7 +273,7 @@ function authenticateToken(req: Request, res: Response, next: NextFunction) {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    const decoded = jwt.verify(token, getJwtSecretSync()) as JwtPayload;
     (req as any).user = decoded;
     next();
   } catch (err) {
@@ -290,6 +296,7 @@ function requireRole(allowedRoles: string[]) {
 }
 
 async function startServer() {
+  const JWT_SECRET = await resolveJwtSecretAsync();
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
@@ -503,6 +510,46 @@ async function startServer() {
   app.post('/api/webhooks/airwallex', express.raw({ type: 'application/json' }), handleAirwallexRawWebhook);
   app.post('/api/airwallex/webhook', express.raw({ type: 'application/json' }), handleAirwallexRawWebhook);
 
+  // PartnerStack Webhook Endpoint (mount raw body handler BEFORE express.json)
+  app.post('/api/webhooks/partnerstack', express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
+    const signature = (req.headers['x-partnerstack-signature'] || req.headers['x-signature']) as string | undefined;
+    const rawBodyStr = Buffer.isBuffer(req.body)
+      ? req.body.toString('utf8')
+      : typeof req.body === 'string'
+        ? req.body
+        : JSON.stringify(req.body || {});
+
+    const verification = await verifyPartnerStackWebhookSignature(rawBodyStr, signature);
+    if (!verification.isValid) {
+      return res.status(401).json({ error: verification.error || 'Invalid PartnerStack webhook signature' });
+    }
+
+    let payload: any = {};
+    try {
+      payload = JSON.parse(rawBodyStr);
+    } catch {
+      payload = {};
+    }
+
+    const eventName = payload?.event || payload?.type || 'webhook.inbound';
+    const dataObj = payload?.data || payload;
+
+    await savePartnerStackEventToDB({
+      id: `ps_wh_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      eventType: 'webhook.inbound',
+      customerEmail: dataObj?.email || dataObj?.customer_email,
+      partnerKey: dataObj?.partner_key || dataObj?.partnership_key,
+      amountGBP: dataObj?.amount ? Number(dataObj.amount) / 100 : undefined,
+      currency: (dataObj?.currency || 'GBP').toUpperCase(),
+      syncStatus: 'live_synced',
+      partnerStackResponseId: dataObj?.key || payload?.id,
+      metadata: { webhookEvent: eventName, payload: dataObj },
+      createdAt: new Date().toISOString()
+    });
+
+    res.status(200).json({ received: true, event: eventName });
+  });
+
   app.use(express.json({ limit: '10mb' }));
 
   // Health check
@@ -513,10 +560,10 @@ async function startServer() {
   // Automated Security Test Check
   app.get('/api/tests/security-check', async (req: Request, res: Response) => {
     try {
-      // 1. Password hash verification test
+      // 1. JWT-keyed AES-256-GCM + HMAC-SHA256 + Bcrypt password encryption verification test
       const testPass = 'TidyCorpSecure2026!';
-      const hash = await bcrypt.hash(testPass, 10);
-      const passValid = await bcrypt.compare(testPass, hash);
+      const encryptedHash = await encryptAndHashPassword(testPass);
+      const passVerify = await verifyEncryptedPassword(testPass, encryptedHash);
 
       // 2. JWT issuance & expiry test
       const testToken = jwt.sign({ userId: 'test-id', email: 'test@tidycorp.co.uk', role: 'contractor' }, JWT_SECRET, { expiresIn: '1h' });
@@ -528,7 +575,8 @@ async function startServer() {
       res.json({
         success: true,
         tests: {
-          passwordHashVerified: passValid,
+          passwordHashVerified: passVerify.valid,
+          jwtKeyedPasswordEncryptionVerified: encryptedHash.startsWith('jwt_enc_v1:') && passVerify.valid,
           jwtTokenVerified: decoded?.userId === 'test-id',
           jwtExpiryConfigured: decoded?.exp > 0,
           firestoreReadVerified: Array.isArray(projects),
@@ -657,7 +705,7 @@ async function startServer() {
       return res.status(400).json({ error: validationErr });
     }
 
-    const { email, password, name, companyName, role, phone, contractorProfile } = req.body;
+    const { email, password, name, companyName, role, phone, contractorProfile, partnerAttribution } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
 
     const existing = await getUserByEmail(normalizedEmail);
@@ -666,7 +714,7 @@ async function startServer() {
     }
 
     const userRole = role === 'contractor' ? 'contractor' : role === 'inspector' ? 'inspector' : 'homeowner';
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await encryptAndHashPassword(password);
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
     const verificationCodeExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
@@ -680,6 +728,16 @@ async function startServer() {
       emailVerified: false,
       verificationCode,
       verificationCodeExpiresAt,
+      partnerStackAttribution: partnerAttribution && (partnerAttribution.partnerKey || partnerAttribution.pscd || partnerAttribution.referralCode)
+        ? {
+            partnerKey: String(partnerAttribution.partnerKey || partnerAttribution.pscd || partnerAttribution.referralCode).slice(0, 128),
+            pscd: partnerAttribution.pscd ? String(partnerAttribution.pscd).slice(0, 128) : undefined,
+            referralCode: partnerAttribution.referralCode ? String(partnerAttribution.referralCode).slice(0, 128) : undefined,
+            source: partnerAttribution.source ? String(partnerAttribution.source).slice(0, 64) : 'partnerstack',
+            landingUrl: partnerAttribution.landingUrl ? String(partnerAttribution.landingUrl).slice(0, 256) : undefined,
+            capturedAt: partnerAttribution.capturedAt || new Date().toISOString()
+          }
+        : undefined,
       createdAt: new Date().toISOString()
     };
 
@@ -708,10 +766,71 @@ async function startServer() {
       await saveContractorToDB(newVettedContractor);
     }
 
-    // Attempt to deliver the verification code via transactional email
+    const emailConfig = await getResolvedEmailConfig();
+
+    if (!emailConfig.isConfigured) {
+      // No external transactional email provider (Resend/SendGrid/etc.) configured yet:
+      // Activate the account directly and issue a signed JWT session so users can register cleanly.
+      newUser.emailVerified = true;
+      delete newUser.verificationCode;
+      delete newUser.verificationCodeExpiresAt;
+
+      await saveUser(newUser);
+
+      const token = jwt.sign(
+        { userId: newUser.id, email: newUser.email, role: newUser.role, name: newUser.name },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+      );
+
+      const defaultSub: UserSubscription = {
+        planId: newUser.role === 'contractor' ? 'journeyman_pro' : 'apprentice',
+        planName: newUser.role === 'contractor' ? 'Journeyman Pro' : 'Apprentice',
+        billingInterval: 'monthly',
+        status: 'active',
+        renewalDate: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0],
+        monthlyCreditsQuota: newUser.role === 'contractor' ? 100000 : 5000,
+        remainingCredits: newUser.role === 'contractor' ? 100000 : 5000,
+        transactionFeeRate: newUser.role === 'contractor' ? '5% GTV' : '10% GTV',
+        hasEscrowPrePurchasePass: false,
+        escrowPassVolumeUsedGBP: 0,
+        activeCarePackageId: 'none'
+      };
+
+      if (newUser.partnerStackAttribution) {
+        try {
+          await syncPartnerStackCustomerSignup({
+            userId: newUser.id,
+            email: newUser.email,
+            name: newUser.name,
+            role: newUser.role,
+            attribution: newUser.partnerStackAttribution
+          });
+        } catch (psErr) {
+          console.warn('[PARTNERSTACK SIGNUP SYNC WARNING]:', psErr);
+        }
+      }
+
+      const { passwordHash: _ph, ...userPublic } = newUser;
+      userPublic.subscription = defaultSub;
+
+      console.warn(`[AUTH] Registered and activated ${normalizedEmail} directly (no external email provider configured).`);
+
+      return res.status(201).json({
+        success: true,
+        requiresVerification: false,
+        emailVerificationSkipped: true,
+        email: normalizedEmail,
+        token,
+        user: userPublic,
+        message: 'Account created and activated successfully!'
+      });
+    }
+
+    // Attempt to deliver the verification code via configured transactional email provider
     const emailResult = await sendRegistrationVerificationEmail(normalizedEmail, name, verificationCode);
     if (!emailResult.success) {
-      console.error(`[AUTH REGISTRATION ERROR] Email delivery failed for ${normalizedEmail}:`, emailResult.error);
+      console.warn(`[AUTH REGISTRATION WARNING] Email delivery failed for ${normalizedEmail}:`, emailResult.error);
       return res.status(502).json({
         error: `Could not send verification email: ${emailResult.error || 'Transactional email delivery failed'}. Please verify email settings or contact support.`,
         emailDeliveryFailed: true,
@@ -769,6 +888,21 @@ async function startServer() {
 
       user.subscription = user.subscription || defaultSub;
 
+      // Sync verified signup with PartnerStack if user arrived via a partner link
+      if ((user as StoredUser).partnerStackAttribution) {
+        try {
+          await syncPartnerStackCustomerSignup({
+            userId: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            attribution: (user as StoredUser).partnerStackAttribution
+          });
+        } catch (psErr) {
+          console.warn('[PARTNERSTACK SIGNUP SYNC WARNING]:', psErr);
+        }
+      }
+
       console.log(`[AUTH] Email verified successfully for: ${user.email}`);
 
       res.json({
@@ -800,6 +934,24 @@ async function startServer() {
         return res.status(400).json({ error: 'This account email is already verified. Please sign in.' });
       }
 
+      const emailConfig = await getResolvedEmailConfig();
+      if (!emailConfig.isConfigured) {
+        await updateUserVerification(user.email, true);
+        const token = jwt.sign(
+          { userId: user.id, email: user.email, role: user.role, name: user.name },
+          JWT_SECRET,
+          { expiresIn: '24h' }
+        );
+        const { passwordHash: _ph, ...userPublic } = user;
+        return res.json({
+          success: true,
+          autoVerified: true,
+          token,
+          user: { ...userPublic, emailVerified: true },
+          message: 'Account activated successfully!'
+        });
+      }
+
       const verification = await createEmailVerificationCode(email);
       if (!verification) {
         return res.status(500).json({ error: 'Could not generate a new verification code.' });
@@ -807,7 +959,7 @@ async function startServer() {
 
       const emailResult = await sendResendVerificationEmail(user.email, user.name, verification.code);
       if (!emailResult.success) {
-        console.error(`[AUTH RESEND ERROR] Failed to send verification email to ${email}:`, emailResult.error);
+        console.warn(`[AUTH RESEND WARNING] Failed to send verification email to ${email}:`, emailResult.error);
         return res.status(502).json({
           error: `Could not send verification email: ${emailResult.error || 'Transactional email delivery failed'}. Please try again later.`
         });
@@ -841,26 +993,35 @@ async function startServer() {
       return res.status(401).json({ error: 'Invalid email address or password.' });
     }
 
-    const isMatch = await bcrypt.compare(password, storedUser.passwordHash);
-    if (!isMatch) {
+    const passwordVerification = await verifyEncryptedPassword(password, storedUser.passwordHash);
+    if (!passwordVerification.valid) {
       return res.status(401).json({ error: 'Invalid email address or password.' });
+    }
+    if (passwordVerification.needsReencryption) {
+      await updateUserPassword(storedUser.id, password);
     }
 
     // Check if email has been verified
     if (storedUser.emailVerified === false) {
-      const freshVerification = await createEmailVerificationCode(storedUser.email);
-      if (freshVerification) {
-        await sendResendVerificationEmail(storedUser.email, storedUser.name, freshVerification.code);
-      }
-      console.log(`[AUTH] Blocked unverified login for ${storedUser.email}. Sent new verification code to inbox.`);
+      const emailConfig = await getResolvedEmailConfig();
+      if (!emailConfig.isConfigured) {
+        await updateUserVerification(storedUser.email, true);
+        storedUser.emailVerified = true;
+      } else {
+        const freshVerification = await createEmailVerificationCode(storedUser.email);
+        if (freshVerification) {
+          await sendResendVerificationEmail(storedUser.email, storedUser.name, freshVerification.code);
+        }
+        console.log(`[AUTH] Blocked unverified login for ${storedUser.email}. Sent new verification code to inbox.`);
 
-      // NEVER return verificationCode to client
-      return res.status(403).json({
-        error: 'Please confirm your email address before logging in.',
-        requiresVerification: true,
-        email: storedUser.email,
-        message: `Your email address has not been verified yet. We have sent a 6-digit verification code to ${storedUser.email}. Please check your inbox.`
-      });
+        // NEVER return verificationCode to client
+        return res.status(403).json({
+          error: 'Please confirm your email address before logging in.',
+          requiresVerification: true,
+          email: storedUser.email,
+          message: `Your email address has not been verified yet. We have sent a 6-digit verification code to ${storedUser.email}. Please check your inbox.`
+        });
+      }
     }
 
     const token = jwt.sign(
@@ -910,6 +1071,13 @@ async function startServer() {
         });
       }
 
+      const emailConfig = await getResolvedEmailConfig();
+      if (!emailConfig.isConfigured) {
+        return res.status(400).json({
+          error: 'Password recovery emails are unavailable because no transactional email provider (RESEND_API_KEY or SENDGRID_API_KEY) is configured yet.'
+        });
+      }
+
       const resetData = await createPasswordResetToken(user.email);
       if (!resetData) {
         return res.status(500).json({ error: 'Could not generate password reset request.' });
@@ -917,7 +1085,7 @@ async function startServer() {
 
       const emailResult = await sendPasswordResetEmail(user.email, user.name, resetData.otp);
       if (!emailResult.success) {
-        console.error(`[AUTH FORGOT PASSWORD ERROR] Failed to send reset email to ${user.email}:`, emailResult.error);
+        console.warn(`[AUTH FORGOT PASSWORD WARNING] Failed to send reset email to ${user.email}:`, emailResult.error);
         return res.status(502).json({
           error: `Could not deliver password reset email: ${emailResult.error || 'Transactional email delivery failed'}. Please try again later.`
         });
@@ -1159,6 +1327,23 @@ async function startServer() {
     };
 
     await saveTransactionToDB(transaction);
+
+    // Sync PartnerStack commission & transaction event if user was referred by a partner
+    try {
+      await syncPartnerStackTransaction({
+        customerEmail: emailToUse,
+        customerName: nameToUse,
+        customerId: storedUser?.id,
+        amountGBP: Number(amount) || 0,
+        currency,
+        transactionKey: txId,
+        productKey: `${itemType}_${itemId}`,
+        category: 'subscription',
+        attribution: storedUser?.partnerStackAttribution
+      });
+    } catch (psErr) {
+      console.warn('[PARTNERSTACK AIRWALLEX SYNC WARNING]:', psErr);
+    }
 
     return {
       updatedSub,
@@ -2642,6 +2827,24 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
 
     await saveProjectToDB(project);
 
+    // Sync PartnerStack milestone commission if homeowner was referred by a partner
+    if (project.clientEmail) {
+      try {
+        await syncPartnerStackTransaction({
+          customerEmail: project.clientEmail,
+          customerName: project.clientName,
+          customerId: project.clientId,
+          amountGBP: milestone.platformFeeGBP || Number((milestone.amount * 0.15).toFixed(2)),
+          currency: project.currency || 'GBP',
+          transactionKey: txId,
+          productKey: `escrow_milestone_${milestone.id}`,
+          category: 'escrow_milestone'
+        });
+      } catch (psErr) {
+        console.warn('[PARTNERSTACK ESCROW SYNC WARNING]:', psErr);
+      }
+    }
+
     res.json({
       success: true,
       transaction,
@@ -2653,6 +2856,184 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
     const jwtUser = (req as any).user;
     const txs = await getTransactionsFromDB(jwtUser);
     res.json(txs);
+  });
+
+  // --- PARTNERSTACK AFFILIATE & CHANNEL ECOSYSTEM API ---
+
+  // Public PartnerStack config (safe subset only - never exposes secretKey)
+  app.get('/api/partnerstack/config', async (req: Request, res: Response) => {
+    try {
+      const config = await getPublicPartnerStackConfig();
+      res.json({ success: true, config });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to load PartnerStack configuration' });
+    }
+  });
+
+  // Admin: update PartnerStack config
+  app.post('/api/partnerstack/config', authenticateToken, requireRole(['admin', 'inspector']), async (req: Request, res: Response) => {
+    try {
+      const updated = await updatePartnerStackConfig(req.body || {});
+      res.json({ success: true, config: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to update PartnerStack configuration' });
+    }
+  });
+
+  // Public: record PartnerStack referral click
+  app.post('/api/partnerstack/track-click', async (req: Request, res: Response) => {
+    try {
+      const { partnerKey, pscd, referralCode, landingUrl } = req.body || {};
+      const result = await recordPartnerStackClick({ partnerKey, pscd, referralCode, landingUrl });
+      res.json({ success: true, matchedPartner: Boolean(result?.partner) });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to track partner referral click' });
+    }
+  });
+
+  // Public or Authenticated: Apply / Onboard as a Tidy Corp PartnerStack Partner
+  app.post('/api/partnerstack/partners/apply', async (req: Request, res: Response) => {
+    try {
+      const { name, email, companyName, partnerType = 'trade_guild', website } = req.body || {};
+      if (!name || !email || !validateEmail(email) || !companyName) {
+        return res.status(400).json({ error: 'Full name, valid work email, and company/organisation name are required.' });
+      }
+
+      let userId: string | undefined;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const decoded = jwt.verify(authHeader.split(' ')[1], JWT_SECRET) as JwtPayload;
+          userId = decoded.userId;
+        } catch {
+          // optional auth
+        }
+      }
+
+      const originHeader =
+        (req.headers.origin as string) ||
+        (req.headers.referer ? new URL(req.headers.referer as string).origin : '') ||
+        '';
+      const appUrl = originHeader || process.env.APP_URL || 'http://localhost:3000';
+
+      const validTypes = ['trade_guild', 'property_agency', 'mortgage_broker', 'affiliate_creator'];
+      const safeType = validTypes.includes(partnerType) ? partnerType : 'trade_guild';
+
+      const result = await applyAsPartnerStackPartner({
+        userId,
+        name,
+        email,
+        companyName,
+        partnerType: safeType as any,
+        website,
+        appUrl
+      });
+
+      res.status(201).json({
+        success: true,
+        partner: result.partner,
+        event: result.event
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to submit PartnerStack partner application' });
+    }
+  });
+
+  // Authenticated: List partners (Admin gets all, standard user gets their own partner profile)
+  app.get('/api/partnerstack/partners', authenticateToken, async (req: Request, res: Response) => {
+    try {
+      const jwtUser = (req as any).user as JwtPayload;
+      const allPartners = await getPartnerStackPartnersFromDB();
+      if (jwtUser.role === 'admin' || jwtUser.role === 'inspector') {
+        return res.json({ success: true, partners: allPartners });
+      }
+      const own = allPartners.filter(
+        p => p.email.toLowerCase() === jwtUser.email.toLowerCase() || (p.userId && p.userId === jwtUser.userId)
+      );
+      res.json({ success: true, partners: own });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve PartnerStack partners' });
+    }
+  });
+
+  // Admin: Approve or activate partner
+  app.put('/api/partnerstack/partners/:id/status', authenticateToken, requireRole(['admin', 'inspector']), async (req: Request, res: Response) => {
+    try {
+      const { status } = req.body || {};
+      if (!['pending', 'approved', 'active'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid partner status' });
+      }
+      const allPartners = await getPartnerStackPartnersFromDB();
+      const target = allPartners.find(p => p.id === req.params.id);
+      if (!target) return res.status(404).json({ error: 'Partner not found' });
+
+      target.status = status;
+      await savePartnerStackPartnerToDB(target);
+      res.json({ success: true, partner: target });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to update partner status' });
+    }
+  });
+
+  // Authenticated: Get PartnerStack events (Admin sees all, partner sees events for their partnerKey)
+  app.get('/api/partnerstack/events', authenticateToken, async (req: Request, res: Response) => {
+    try {
+      const jwtUser = (req as any).user as JwtPayload;
+      const events = await getPartnerStackEventsFromDB();
+      if (jwtUser.role === 'admin' || jwtUser.role === 'inspector') {
+        return res.json({ success: true, events });
+      }
+      const ownPartner = await getPartnerByEmailFromDB(jwtUser.email);
+      if (!ownPartner) return res.json({ success: true, events: [] });
+
+      const filtered = events.filter(
+        ev => ev.partnerKey === ownPartner.partnerKey || ev.referralCode === ownPartner.referralCode
+      );
+      res.json({ success: true, events: filtered });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to fetch PartnerStack event logs' });
+    }
+  });
+
+  // Admin: Dispatch a test PartnerStack S2S conversion event
+  app.post('/api/partnerstack/test-event', authenticateToken, requireRole(['admin', 'inspector']), async (req: Request, res: Response) => {
+    try {
+      const { partnerKey, customerEmail = 'referred-demo@tidycorp.co.uk', amountGBP = 80.3 } = req.body || {};
+      const resolvedKey = partnerKey || 'ps_pk_demo_partner';
+
+      const signupEv = await syncPartnerStackCustomerSignup({
+        userId: `usr_test_${Date.now()}`,
+        email: customerEmail,
+        name: 'Test Referred Contractor',
+        role: 'contractor',
+        attribution: {
+          partnerKey: resolvedKey,
+          pscd: resolvedKey,
+          referralCode: resolvedKey,
+          capturedAt: new Date().toISOString()
+        }
+      });
+
+      const txEv = await syncPartnerStackTransaction({
+        customerEmail,
+        customerName: 'Test Referred Contractor',
+        amountGBP: Number(amountGBP) || 80.3,
+        currency: 'GBP',
+        transactionKey: `ps_test_tx_${Date.now()}`,
+        productKey: 'plan_journeyman_pro',
+        category: 'subscription',
+        attribution: {
+          partnerKey: resolvedKey,
+          pscd: resolvedKey,
+          referralCode: resolvedKey,
+          capturedAt: new Date().toISOString()
+        }
+      });
+
+      res.json({ success: true, signupEvent: signupEv, transactionEvent: txEv });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to dispatch PartnerStack test event' });
+    }
   });
 
   // --- STATIC ASSETS SERVING & STRICT MIME TYPE ENFORCEMENT ---
@@ -2713,6 +3094,15 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
     return res.status(404).type('text/plain').send('Asset not found');
   });
 
+  // Unknown API endpoints always return JSON 404 instead of falling through to SPA HTML
+  app.use('/api', (req: Request, res: Response) => {
+    return res.status(404).json({
+      error: 'API endpoint not found',
+      statusCode: 404,
+      path: req.originalUrl
+    });
+  });
+
   // VITE MIDDLEWARE / STATIC SERVING
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -2724,20 +3114,126 @@ Return comprehensive JSON for fair-market quote with materialsList, laborList, m
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req: Request, res: Response) => {
-      // Guard: Never serve index.html for missing assets or files with extensions
+      // Guard: Never serve index.html for missing assets or non-HTML files with extensions
+      if (req.path.endsWith('.html') && req.path !== '/index.html') {
+        return res.status(404).type('text/html').send(
+          renderCustomErrorHtml({
+            statusCode: 404,
+            title: 'Page Not Found',
+            message: 'The page you requested could not be found on Tidy Corporation Ltd.',
+            path: req.originalUrl
+          })
+        );
+      }
       if (req.path.startsWith('/assets/') || /\.[a-zA-Z0-9]+$/.test(req.path)) {
         return res.status(404).send('Asset not found');
       }
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.sendFile(path.join(distPath, 'index.html'), err => {
+        if (err && !res.headersSent) {
+          res.status(500).type('text/html').send(
+            renderCustomErrorHtml({
+              statusCode: 500,
+              title: 'Application Temporarily Unavailable',
+              message: 'We encountered an unexpected error loading the web portal.',
+              path: req.originalUrl
+            })
+          );
+        }
+      });
     });
   }
+
+  // Global Express Error Handler -> Branded Custom Error Page for browser routes / JSON for APIs
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+    const status = Number(err?.status || err?.statusCode) || 500;
+    console.error('[SERVER ERROR]:', err);
+    if (res.headersSent) return;
+    if (req.path.startsWith('/api/')) {
+      return res.status(status).json({
+        error: err?.message || 'Internal server error',
+        statusCode: status
+      });
+    }
+    const safeStatus = status === 403 || status === 404 || status === 503 ? status : 500;
+    return res.status(safeStatus).type('text/html').send(
+      renderCustomErrorHtml({
+        statusCode: safeStatus,
+        title: safeStatus === 404 ? 'Page Not Found' : safeStatus === 403 ? 'Access Restricted' : 'Unexpected Server Error',
+        message: safeStatus === 404
+          ? 'The requested link could not be found on Tidy Corporation Ltd.'
+          : 'An unexpected server fault interrupted this request. Your escrow records remain safe.',
+        path: req.originalUrl
+      })
+    );
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Renovation Payment Hub Server running on http://0.0.0.0:${PORT}`);
   });
+}
+
+function escapeHtml(input: string): string {
+  return String(input || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderCustomErrorHtml(params: {
+  statusCode: number;
+  title: string;
+  message: string;
+  path?: string;
+}): string {
+  const safePath = escapeHtml(params.path || '/');
+  const safeTitle = escapeHtml(params.title);
+  const safeMessage = escapeHtml(params.message);
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HTTP ${params.statusCode} · Tidy Corporation Ltd</title>
+    <style>
+      body { margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0A1128; color: #F1F5F9; min-height: 100vh; display: flex; flex-direction: column; }
+      header, footer { border-color: rgba(30,41,59,0.9); padding: 16px 24px; }
+      header { border-bottom: 1px solid #1E293B; display: flex; align-items: center; justify-content: space-between; max-width: 1120px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+      main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px 24px; }
+      .card { max-width: 680px; width: 100%; background: #0F172A; border: 1px solid #1E293B; border-radius: 16px; padding: 40px; box-sizing: border-box; }
+      .meta { font-size: 13px; color: #94A3B8; margin-bottom: 16px; }
+      .code { color: #FF7F00; font-weight: 700; font-family: monospace; }
+      h1 { font-size: 32px; margin: 0 0 12px; line-height: 1.2; color: #FFFFFF; }
+      p { font-size: 15px; line-height: 1.6; color: #CBD5E1; margin: 0 0 28px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+      a.btn-primary { background: #0057B8; color: #FFFFFF; text-decoration: none; padding: 11px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; }
+      a.btn-secondary { border: 1px solid #334155; color: #E2E8F0; text-decoration: none; padding: 11px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; }
+      footer { border-top: 1px solid #1E293B; font-size: 12px; color: #94A3B8; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <a href="/" style="color:#FFFFFF;text-decoration:none;font-weight:800;font-size:16px;">Tidy Corporation Ltd</a>
+      <a href="/" class="btn-primary" style="padding:8px 16px;font-size:12px;">Return Home</a>
+    </header>
+    <main>
+      <section class="card">
+        <div class="meta"><span class="code">HTTP ${params.statusCode}</span> &middot; <span>${safePath}</span></div>
+        <h1>${safeTitle}</h1>
+        <p>${safeMessage}</p>
+        <div class="actions">
+          <a href="/" class="btn-primary">Return to Home</a>
+          <a href="mailto:enquiries@tidycorp.co.uk" class="btn-secondary">Contact Support</a>
+        </div>
+      </section>
+    </main>
+    <footer>Tidy Corporation Ltd &middot; Company Registration: 16530001 &middot; enquiries@tidycorp.co.uk</footer>
+  </body>
+</html>`;
 }
 
 function generateFallbackDiscoveredContractors(tradeCategory: string, location: string): ExternalDiscoveredContractor[] {

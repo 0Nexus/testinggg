@@ -147,6 +147,64 @@
         "invitedBy": { "type": "string" }
       },
       "required": ["contractorEmail", "inviteToken"]
+    },
+    "partnerStackConfig": {
+      "title": "PartnerStack Configuration",
+      "description": "PartnerStack affiliate and channel integration configuration",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "publicKey": { "type": "string" },
+        "companyKey": { "type": "string" },
+        "partnerPortalUrl": { "type": "string" },
+        "defaultCommissionPercent": { "type": "number" },
+        "contractorBountyGBP": { "type": "number" },
+        "trackEscrowFees": { "type": "boolean" },
+        "autoApprovePartners": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["enabled", "defaultCommissionPercent"]
+    },
+    "partnerStackPartners": {
+      "title": "PartnerStack Partner",
+      "description": "Registered affiliate, trade guild, and agency partners",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "companyName": { "type": "string" },
+        "partnerType": { "type": "string" },
+        "referralCode": { "type": "string" },
+        "referralLink": { "type": "string" },
+        "partnerKey": { "type": "string" },
+        "status": { "type": "string" },
+        "clicksCount": { "type": "number" },
+        "signupsCount": { "type": "number" },
+        "paidConversionsCount": { "type": "number" },
+        "totalRevenueReferredGBP": { "type": "number" },
+        "totalCommissionsEarnedGBP": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "referralCode", "partnerKey"]
+    },
+    "partnerStackEvents": {
+      "title": "PartnerStack Conversion Event",
+      "description": "PartnerStack attribution, signup, transaction, and webhook audit events",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventType": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "partnerKey": { "type": "string" },
+        "amountGBP": { "type": "number" },
+        "commissionGBP": { "type": "number" },
+        "currency": { "type": "string" },
+        "syncStatus": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "eventType", "syncStatus", "createdAt"]
     }
   },
   "firestore": {
@@ -177,6 +235,18 @@
     "/invitationLogs/{logId}": {
       "schema": "invitationLogs",
       "description": "Invitation dispatch logs"
+    },
+    "/partnerStackConfig/{configId}": {
+      "schema": "partnerStackConfig",
+      "description": "PartnerStack integration configuration"
+    },
+    "/partnerStackPartners/{partnerId}": {
+      "schema": "partnerStackPartners",
+      "description": "PartnerStack partner directory"
+    },
+    "/partnerStackEvents/{eventId}": {
+      "schema": "partnerStackEvents",
+      "description": "PartnerStack event and conversion ledger"
     }
   }
 }

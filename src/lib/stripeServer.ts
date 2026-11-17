@@ -1,6 +1,7 @@
 import Stripe from 'stripe';
 import crypto from 'crypto';
 import { fetchSecretFromGCP, getGcpProjectId, SecretDiagnostic } from './airwallexServer.js';
+import { syncPartnerStackTransaction } from './partnerStackServer.js';
 import {
   getUserByEmail,
   saveUser,
@@ -577,6 +578,23 @@ export async function applyStripeSubscriptionToUser(params: {
   };
 
   await saveTransactionToDB(transaction);
+
+  // Sync PartnerStack commission & transaction event if user was referred by a partner
+  try {
+    await syncPartnerStackTransaction({
+      customerEmail: emailToUse,
+      customerName: nameToUse,
+      customerId: storedUser?.id,
+      amountGBP: numAmount,
+      currency,
+      transactionKey: txId,
+      productKey: `${itemType}_${itemId}`,
+      category: 'subscription',
+      attribution: storedUser?.partnerStackAttribution
+    });
+  } catch (psErr) {
+    console.warn('[PARTNERSTACK STRIPE SYNC WARNING]:', psErr);
+  }
 
   // Update session record if it exists
   const session = await getStripeSessionFromDB(gatewayRef);
